@@ -8,6 +8,8 @@ struct ChatView: View {
     @ObservedObject private var instructions = InstructionsStore.shared
     @FocusState private var composerFocused: Bool
     @State private var showInstructions = false
+    @State private var showSlashCommands = false
+    @State private var showModelPicker = false
 
     private static let fallbackSlashCommands = [
         "compact", "context", "init", "review", "security-review", "usage",
@@ -68,6 +70,12 @@ struct ChatView: View {
             }
             .onChange(of: vm.isRunning) { _, _ in
                 withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }
+            }
+            // Drop zone for attachments. Kept OFF the composer: a drop handler
+            // there swallows the mouse-down that opens the inline menus.
+            .dropDestination(for: URL.self) { urls, _ in
+                vm.addAttachments(urls: urls)
+                return true
             }
         }
     }
@@ -136,10 +144,6 @@ struct ChatView: View {
         }
         .padding(16)
         .readingColumn()
-        .dropDestination(for: URL.self) { urls, _ in
-            vm.addAttachments(urls: urls)
-            return true
-        }
         .onAppear { composerFocused = true }
         .sheet(isPresented: $showInstructions) {
             InstructionsView()
@@ -148,24 +152,22 @@ struct ChatView: View {
 
     /// Claude Code slash commands, inserted into the composer.
     private var slashMenu: some View {
-        Menu {
-            let commands = vm.slashCommands.isEmpty ? Self.fallbackSlashCommands : vm.slashCommands
-            ForEach(commands, id: \.self) { cmd in
-                Button("/" + cmd) {
-                    vm.composer = "/" + cmd + " "
-                    composerFocused = true
-                }
-            }
+        Button {
+            showSlashCommands = true
         } label: {
-            Image(systemName: "slash.circle")
-                .frame(width: 20, height: 20)
+            Image(systemName: "slash.circle").frame(width: 20, height: 20)
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .frame(width: 34, height: 34)
-        .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.corner))
-        .overlay(RoundedRectangle(cornerRadius: Theme.corner).stroke(Theme.hairline))
+        .buttonStyle(.bordered)
+        .controlSize(.large)
         .help("Commandes Claude Code")
+        .sheet(isPresented: $showSlashCommands) {
+            SlashCommandsSheet(
+                commands: vm.slashCommands.isEmpty ? Self.fallbackSlashCommands : vm.slashCommands
+            ) { cmd in
+                vm.composer = "/" + cmd + " "
+                composerFocused = true
+            }
+        }
     }
 
     // MARK: Inline controls (model, permissions, effort, folder, instructions)
@@ -182,100 +184,57 @@ struct ChatView: View {
     }
 
     private var modelMenu: some View {
-        Menu {
-            let groups = Dictionary(grouping: vm.availableModels, by: { $0.provider })
-            ForEach([LLMModel.Provider.anthropic, .ollama], id: \.self) { provider in
-                if let models = groups[provider], !models.isEmpty {
-                    Section(provider.label) {
-                        ForEach(models) { model in
-                            Button {
-                                settings.selectedModelId = model.id
-                            } label: {
-                                if model.id == settings.selectedModelId {
-                                    Label(model.name, systemImage: "checkmark")
-                                } else {
-                                    Text(model.name)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            Divider()
-            Button {
-                Task { await vm.refreshModels() }
-            } label: {
-                Label("Rafraîchir les modèles Ollama", systemImage: "arrow.clockwise")
-            }
+        Button {
+            showModelPicker = true
         } label: {
-            chip(icon: vm.selectedModel.provider == .ollama ? "desktopcomputer" : "cloud",
-                 text: vm.selectedModel.name)
+            Label(vm.selectedModel.name,
+                  systemImage: vm.selectedModel.provider == .ollama ? "desktopcomputer" : "cloud")
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .help("Choisir le modèle (LLM)")
+        .sheet(isPresented: $showModelPicker) {
+            ModelPickerSheet(vm: vm)
+        }
     }
 
+    /// Click cycles to the next permission mode (tooltip explains the current one).
     private var permissionMenu: some View {
-        Menu {
-            ForEach(PermissionMode.allCases) { mode in
-                Button {
-                    settings.permissionMode = mode
-                } label: {
-                    if mode == settings.permissionMode {
-                        Label(mode.label, systemImage: "checkmark")
-                    } else {
-                        Text(mode.label)
-                    }
-                }
-            }
+        Button {
+            let all = PermissionMode.allCases
+            let idx = all.firstIndex(of: settings.permissionMode) ?? 0
+            settings.permissionMode = all[(idx + 1) % all.count]
         } label: {
-            chip(icon: "shield", text: settings.permissionMode.label)
+            Label(settings.permissionMode.label, systemImage: "shield")
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .help("Permissions — cliquer pour changer. \(settings.permissionMode.explanation)")
     }
 
+    /// Click cycles the reasoning effort level.
     private var effortMenu: some View {
-        Menu {
-            ForEach(EffortLevel.allCases) { level in
-                Button {
-                    settings.effortLevel = level
-                } label: {
-                    if level == settings.effortLevel {
-                        Label(level.label, systemImage: "checkmark")
-                    } else {
-                        Text(level.label)
-                    }
-                }
-            }
+        Button {
+            let all = EffortLevel.allCases
+            let idx = all.firstIndex(of: settings.effortLevel) ?? 0
+            settings.effortLevel = all[(idx + 1) % all.count]
         } label: {
-            HStack(spacing: 5) {
+            HStack(spacing: 4) {
                 EffortIndicator(level: settings.effortLevel, compact: true)
                 Text(settings.effortLevel.label)
-                    .font(.caption)
-                    .lineLimit(1)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 8))
-                    .foregroundStyle(.tertiary)
             }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-            .background(Theme.card, in: Capsule())
-            .overlay(Capsule().stroke(Theme.hairline))
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("Effort de raisonnement")
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .help("Effort de raisonnement — cliquer pour changer. \(settings.effortLevel.explanation)")
     }
 
     private var folderButton: some View {
         Button(action: chooseFolder) {
-            chip(icon: "folder", text: folderDisplayName)
+            Label(folderDisplayName, systemImage: "folder")
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.bordered)
+        .controlSize(.small)
         .help("Dossier de travail : \(settings.workingDirectory)")
     }
 
@@ -283,32 +242,12 @@ struct ChatView: View {
         Button {
             showInstructions = true
         } label: {
-            chip(icon: "text.book.closed",
-                 text: instructions.activeCount > 0 ? "Instructions · \(instructions.activeCount)" : "Instructions")
+            Label(instructions.activeCount > 0 ? "Instructions · \(instructions.activeCount)" : "Instructions",
+                  systemImage: "text.book.closed")
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.bordered)
+        .controlSize(.small)
         .help("Instructions .md injectées dans le prompt")
-    }
-
-    private func chip(icon: String, text: String) -> some View {
-        HStack(spacing: 5) {
-            Image(systemName: icon)
-                .font(.caption)
-                .foregroundStyle(Theme.accent)
-            Text(text)
-                .font(.caption)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Image(systemName: "chevron.up.chevron.down")
-                .font(.system(size: 8))
-                .foregroundStyle(.tertiary)
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .frame(maxWidth: 190)
-        .background(Theme.card, in: Capsule())
-        .overlay(Capsule().stroke(Theme.hairline))
-        .contentShape(Capsule())
     }
 
     private var folderDisplayName: String {
