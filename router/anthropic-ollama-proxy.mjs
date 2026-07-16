@@ -207,20 +207,34 @@ async function handleMessages(reqBody, res) {
     const idle = Date.now() - lastActivity
     if (idle < STALL_MS) return
     probing = true
-    // Before the first byte: the model may be (cold-)loading → only require the
-    // server to answer. Once generating: the model must still be loaded in /api/ps.
-    const alive = bodyStarted ? await modelStillRunning(ollamaBody.model) : await serverReachable()
+    // Is the model resident? That's what separates a legitimate long wait from a
+    // lost request: while a model cold-loads it is absent from /api/ps, and that
+    // can take minutes. Once it IS loaded, silence means our stream is dead (the
+    // usual cause: the TCP connection died — VPN hiccup — so the request never
+    // reaches Ollama, which happily answers everyone else).
+    const loaded = await modelStillRunning(ollamaBody.model)
+    const reachable = loaded ? true : await serverReachable()
     probing = false
     const idleNow = Date.now() - lastActivity
-    const hardCap = bodyStarted ? STALL_MS * 5 : STALL_MS * 10
-    if (!alive) {
-      stalled = `le serveur Ollama ne répond plus (${Math.round(idleNow / 1000)}s sans données)`
+    const secs = Math.round(idleNow / 1000)
+
+    if (!reachable) {
+      stalled = `le serveur Ollama ne répond plus (${secs}s sans données)`
+    } else if (!loaded && !bodyStarted) {
+      // Cold load in progress — be patient, but not forever.
+      if (idleNow > STALL_MS * 10) stalled = `le modèle n'a pas fini de charger (${secs}s)`
+    } else if (idleNow > STALL_MS * 2) {
+      // Model resident but our stream is silent → the request is lost.
+      stalled = bodyStarted
+        ? `génération interrompue (${secs}s sans données, modèle toujours chargé)`
+        : `requête perdue (${secs}s sans réponse alors que le modèle est chargé et le serveur répond)`
+    }
+
+    if (stalled) {
       log(`stall: ${stalled} — abandon du tour`)
       controller.abort()
-    } else if (idleNow > hardCap) {
-      stalled = `génération bloquée (${Math.round(idleNow / 1000)}s sans données alors que le serveur répond)`
-      log(`stall: ${stalled} — abandon du tour`)
-      controller.abort()
+    } else {
+      log(`watchdog: ${secs}s d'inactivité (chargé=${loaded}, flux démarré=${bodyStarted}) — on patiente`)
     }
   }, 10_000)
 
