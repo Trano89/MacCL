@@ -46,16 +46,25 @@ final class AppHealthMonitor {
     /// Called by AppLifecycleObserver when the app comes back to foreground.
     func didBecomeActive() {
         isAppBackgrounded = false
-        // Force an immediate heal — the router almost certainly died while backgrounded.
-        Task { await self.forceHeal() }
+        // Re-check on return to foreground, but never heal blindly: the router is
+        // a child process and does NOT die when the app is backgrounded. Blindly
+        // restarting it used to kill in-flight requests, leaving `claude` hung
+        // forever ("it ran two minutes then nothing").
+        Task { await self.periodicHealthCheck() }
     }
 
     // MARK: - Health checks
 
     private func periodicHealthCheck() async {
         guard !isAppBackgrounded, !isHealing else { return }
+        // Never touch the bridge while a turn is running — a restart would break
+        // the live connection and hang the turn.
+        guard delegate?.isTurnInFlight != true else {
+            failCount = 0
+            return
+        }
 
-        let healthy = await Self.checkRouterHealth(port: AppSettings.shared.routerPort)
+        let healthy = await ModelRouter.shared.bridgeHealthy(settings: AppSettings.shared)
 
         if healthy {
             failCount = 0
@@ -67,14 +76,11 @@ final class AppHealthMonitor {
         }
     }
 
-    /// Force a full heal right now — used on foreground transition.
-    private func forceHeal() async {
-        guard !isHealing else { return }
-        await self.heal()
-    }
-
     private func heal() async {
         guard !isHealing else { return }
+        // Last-chance guard: a turn may have started while we were checking.
+        guard delegate?.isTurnInFlight != true else { return }
+        AppLog.write("health", "router unhealthy \(failCount)× — healing")
         isHealing = true
         defer { isHealing = false; failCount = 0 }
 
@@ -122,4 +128,7 @@ protocol HealthDelegate: AnyObject {
     func willRestartRouter()
     func routerDidRestart()
     func healFailed(error: String)
+    /// True while a turn is in flight. Restarting the router mid-turn kills the
+    /// in-flight request and leaves `claude` hanging forever, so healing must wait.
+    var isTurnInFlight: Bool { get }
 }

@@ -96,6 +96,23 @@ final class ModelRouter {
         settings.bridgeEngine == .litellm ? "/health/liveliness" : "/health"
     }
 
+    /// Is the active bridge answering? Use this — never `OllamaClient.isReachable`,
+    /// which probes Ollama's `/api/tags`; a bridge doesn't serve that, so it would
+    /// always look dead and get needlessly restarted mid-turn.
+    func bridgeHealthy(settings: AppSettings) async -> Bool {
+        let port = activeBridgePort(settings: settings)
+        let path = activeBridgeHealthPath(settings: settings)
+        guard let url = URL(string: "http://127.0.0.1:\(port)\(path)") else { return false }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 2
+        do {
+            let (_, resp) = try await URLSession.shared.data(for: req)
+            return (resp as? HTTPURLResponse)?.statusCode == 200
+        } catch {
+            return false
+        }
+    }
+
     /// Start keep-alive pings for the current proxy port.  Call this when a model is selected.
     func startKeepAlive(port: Int, healthPath: String = "/health") {
         pinger.start(port: port, healthPath: healthPath)

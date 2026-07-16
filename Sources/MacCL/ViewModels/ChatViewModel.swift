@@ -819,10 +819,13 @@ extension ChatViewModel: HealthDelegate {
         statusLine = L10n.t("router_restarting")
     }
 
+    /// A turn is in flight — the health monitor must not restart the bridge now.
+    var isTurnInFlight: Bool { isRunning }
+
     func routerDidRestart() {
         // If a session is running, check it's still healthy; if not, signal to the user.
         Task {
-            let isHealthy = await OllamaClient.isReachable(baseURL: settings.routerBaseURL)
+            let isHealthy = await ModelRouter.shared.bridgeHealthy(settings: settings)
             await MainActor.run {
                 if isHealthy {
                     statusLine = L10n.t("router_recovered")
@@ -846,15 +849,20 @@ extension ChatViewModel {
     /// the session if the claude process died while backgrounded.
     @MainActor
     private func healAfterBackgrounding() async {
+        // Never heal mid-turn: restarting the bridge kills the in-flight request
+        // and leaves `claude` hanging forever.
+        guard !isRunning else { return }
         guard let currentModel = (sessionId != nil || !items.isEmpty) ? selectedModel : nil else {
             return  // No active session to recover
         }
 
         let wasOllama = currentModel.provider == .ollama || currentModel.provider == .ollamaNetwork
 
-        // Step 1: Is the router still alive? If not, restart it.
-        let routerAlive = await OllamaClient.isReachable(baseURL: settings.routerBaseURL)
+        // Step 1: Is the bridge still alive? (Probe its own health endpoint — the
+        // bridge doesn't serve Ollama's /api/tags.) If not, restart it.
+        let routerAlive = await ModelRouter.shared.bridgeHealthy(settings: settings)
         if wasOllama && !routerAlive {
+            AppLog.write("health", "bridge unreachable after foreground — restarting")
             statusLine = L10n.t("router_restarting")
 
             // Stop dead router, then re-prepare with same model.
