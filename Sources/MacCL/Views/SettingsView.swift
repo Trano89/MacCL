@@ -39,6 +39,9 @@ private struct GeneralTab: View {
     /// Health status for each standby server — keyed by its unique ID.
     /// `nil` means no check has run yet (shows dashed circle icon).
     @State private var serverHealth: [String: Bool] = [:]   // true=reachable, false=unreachable
+    @State private var litellmInstalling = false
+    @State private var litellmMessage = ""
+    @State private var litellmFailed = false
 
     // MARK: - Delete confirmation sheet
 
@@ -53,9 +56,9 @@ private struct GeneralTab: View {
     }
 
     /// Valid context window range for Ollama models.
-    /// 1024 is the minimum useful context; 131072 covers most models' KV-cache limits
-    /// without risking out-of-memory on typical Mac hardware.
-    private static let ctxRange = 1024...131_072
+    /// 1024 is the minimum useful context; 262144 (256k) is the max many recent
+    /// models (qwen3, etc.) support. Large values reserve a lot of RAM.
+    private static let ctxRange = 1024...262_144
 
     /// Valid num_predict range for user-enterable presets (special values -1 and 0 excluded).
     private static let predictUserRange = 128...65_536
@@ -81,18 +84,19 @@ private struct GeneralTab: View {
 
             serverSection
 
+            bridgeSection
+
             Section(L10n.t("local_router")) {
                 Toggle(L10n.t("show_reasoning"), isOn: $settings.showReasoning)
                 Text(L10n.t("reasoning_hint"))
-                    .font(.caption)
                     .foregroundStyle(.secondary)
                 Stepper(value: $settings.routerPort, in: 1024...65535) {
                     LabeledContent(L10n.t("router_port"), value: "\(settings.routerPort)")
                 }
                 LabeledContent(L10n.t("node_detected")) {
                     Text(detectedNode)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(detectedNode == "introuvable" ? .red : .secondary)
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(detectedNode == L10n.t("not_found") ? .red : .secondary)
                         .textSelection(.enabled)
                 }
             }
@@ -413,6 +417,61 @@ private struct GeneralTab: View {
         settings.standbyServers.first { $0.id == id }
     }
 
+    // MARK: - Bridge engine (built-in router vs LiteLLM)
+
+    private var bridgeSection: some View {
+        Section(L10n.t("bridge_engine")) {
+            Picker(L10n.t("bridge_engine"), selection: Binding(
+                get: { settings.bridgeEngine },
+                set: { settings.bridgeEngine = $0 }
+            )) {
+                ForEach(BridgeEngine.allCases) { Text($0.label).tag($0) }
+            }
+            Text(settings.bridgeEngine.explanation)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if settings.bridgeEngine == .litellm {
+                LabeledContent(L10n.t("litellm_status")) {
+                    if litellmInstalling {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text(litellmMessage)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if ModelRouter.shared.litellm.isInstalled {
+                        Text(L10n.t("litellm_installed"))
+                            .foregroundStyle(.green)
+                    } else {
+                        Button(L10n.t("litellm_install")) { installLiteLLM() }
+                    }
+                }
+                if !litellmMessage.isEmpty && !litellmInstalling {
+                    Text(litellmMessage)
+                        .foregroundStyle(litellmFailed ? .red : .secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Stepper(value: $settings.litellmPort, in: 1024...65535) {
+                    LabeledContent(L10n.t("litellm_port"), value: "\(settings.litellmPort)")
+                }
+            }
+        }
+    }
+
+    private func installLiteLLM() {
+        litellmInstalling = true
+        litellmFailed = false
+        litellmMessage = ""
+        Task {
+            let err = await ModelRouter.shared.litellm.install { step in
+                Task { @MainActor in litellmMessage = step }
+            }
+            litellmInstalling = false
+            litellmFailed = err != nil
+            litellmMessage = err ?? L10n.t("litellm_install_ok")
+        }
+    }
+
     // MARK: - Context section (num_ctx / num_predict with range validation)
 
     private var contextSection: some View {
@@ -422,7 +481,8 @@ private struct GeneralTab: View {
                 Text("16 384 — \(L10n.t("recommended"))").tag(16_384)
                 Text("32 768").tag(32_768)
                 Text("65 536").tag(65_536)
-                Text("131 072 — \(L10n.t("model_max"))").tag(131_072)
+                Text("131 072").tag(131_072)
+                Text("262 144 — \(L10n.t("model_max"))").tag(262_144)
                 if !Self.ctxPresets.contains(settings.ollamaNumCtx) {
                     // Clamp to valid range to prevent out-of-bounds persistence.
                     let clamped = max(Self.ctxRange.lowerBound, min(Self.ctxRange.upperBound, settings.ollamaNumCtx))
@@ -481,7 +541,7 @@ private struct GeneralTab: View {
 
 /// Preset context window sizes — used for picker display and custom value detection.
 private extension GeneralTab {
-    static let ctxPresets = [8192, 16384, 32768, 65536, 131_072]
+    static let ctxPresets = [8192, 16384, 32768, 65536, 131_072, 262_144]
 }
 
 // MARK: - Appearance tab (unchanged)

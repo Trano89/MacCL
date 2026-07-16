@@ -84,6 +84,45 @@ struct Attachment: Identifiable, Hashable, Sendable {
                           mediaType: nil, base64: nil, textContent: nil, byteSize: size)
     }
 
+    /// Build an image attachment from raw bytes (clipboard paste, drag of image
+    /// data with no file). Normalizes to a supported format and writes a temp
+    /// file so the chip thumbnail (which loads from `url`) works.
+    static func fromImageData(_ data: Data, suggestedName: String = "collage") -> Attachment? {
+        guard let (base64, mediaType, bytes) = normalizeImage(data) else { return nil }
+        let ext = mediaType == "image/jpeg" ? "jpg" : (mediaType == "image/gif" ? "gif" : "png")
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("MacCL-paste", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("\(suggestedName)-\(UUID().uuidString.prefix(8)).\(ext)")
+        try? bytes.write(to: url)
+        return Attachment(url: url, filename: url.lastPathComponent, kind: .image,
+                          mediaType: mediaType, base64: base64, textContent: nil, byteSize: bytes.count)
+    }
+
+    /// Keep already-supported formats as-is (within the size cap); otherwise
+    /// transcode to PNG. Returns (base64, mediaType, encodedBytes).
+    private static func normalizeImage(_ data: Data) -> (String, String, Data)? {
+        if let mt = imageMediaType(data), data.count <= maxImageBytes {
+            return (data.base64EncodedString(), mt, data)
+        }
+        guard let image = NSImage(data: data),
+              let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]),
+              png.count <= maxImageBytes else { return nil }
+        return (png.base64EncodedString(), "image/png", png)
+    }
+
+    /// Detect an Anthropic-supported image format from magic bytes.
+    private static func imageMediaType(_ data: Data) -> String? {
+        guard data.count >= 12 else { return nil }
+        let b = [UInt8](data.prefix(12))
+        if b[0] == 0x89, b[1] == 0x50, b[2] == 0x4E, b[3] == 0x47 { return "image/png" }
+        if b[0] == 0xFF, b[1] == 0xD8, b[2] == 0xFF { return "image/jpeg" }
+        if b[0] == 0x47, b[1] == 0x49, b[2] == 0x46 { return "image/gif" }
+        if b[0] == 0x52, b[1] == 0x49, b[2] == 0x46, b[8] == 0x57, b[9] == 0x45, b[10] == 0x42, b[11] == 0x50 { return "image/webp" }
+        return nil
+    }
+
     private static func encodeImage(url: URL, ext: String) -> (String, String)? {
         if let mt = directImageTypes[ext],
            let data = try? Data(contentsOf: url), data.count <= maxImageBytes {

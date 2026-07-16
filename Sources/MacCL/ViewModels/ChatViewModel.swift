@@ -205,6 +205,33 @@ final class ChatViewModel: ObservableObject {
         attachments.removeAll { $0.id == id }
     }
 
+    /// Attach an image (or file) from the clipboard. Returns false when the
+    /// clipboard holds no image/file, so the caller can let plain text paste
+    /// normally into the composer.
+    @discardableResult
+    func pasteFromClipboard() -> Bool {
+        let pb = NSPasteboard.general
+        // Copied files (incl. image files) → normal attachment loading.
+        if let urls = pb.readObjects(forClasses: [NSURL.self]) as? [URL], !urls.isEmpty {
+            addAttachments(urls: urls)
+            return true
+        }
+        // Raw image bytes (screenshots, "Copy Image" from a browser, etc.).
+        for type in [NSPasteboard.PasteboardType.png, .tiff] {
+            if let data = pb.data(forType: type), let att = Attachment.fromImageData(data) {
+                attachments.append(att)
+                return true
+            }
+        }
+        if let image = NSImage(pasteboard: pb),
+           let tiff = image.tiffRepresentation,
+           let att = Attachment.fromImageData(tiff) {
+            attachments.append(att)
+            return true
+        }
+        return false
+    }
+
     func stop() {
         watchdog?.cancel()
         waitingHint = nil
@@ -417,7 +444,10 @@ final class ChatViewModel: ObservableObject {
         // pruning the connection while the app is in the background.  This is the key
         // mechanism that keeps remote Ollama bridges operational across alt-tab.
         if model.provider == .ollama || model.provider == .ollamaNetwork {
-            ModelRouter.shared.startKeepAlive(port: settings.routerPort)
+            // Ping whichever bridge is actually serving this turn.
+            ModelRouter.shared.startKeepAlive(
+                port: ModelRouter.shared.activeBridgePort(settings: settings),
+                healthPath: ModelRouter.shared.activeBridgeHealthPath(settings: settings))
         }
 
         let extraEnv = ModelRouter.shared.environment(for: model, settings: settings)

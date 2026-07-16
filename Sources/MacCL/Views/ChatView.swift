@@ -146,6 +146,11 @@ struct ChatView: View {
         .padding(16)
         .readingColumn()
         .onAppear { composerFocused = true }
+        // ⌘V of an image/file attaches it; plain text still pastes into the field
+        // (this only fires for the listed content types).
+        .onPasteCommand(of: [.image, .png, .tiff, .fileURL]) { _ in
+            vm.pasteFromClipboard()
+        }
         .sheet(isPresented: $showInstructions) {
             InstructionsView()
         }

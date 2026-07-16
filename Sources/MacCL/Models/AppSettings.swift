@@ -31,6 +31,14 @@ final class AppSettings: ObservableObject {
         }
     }
     /// Local Anthropic→Ollama router port.
+    /// Which bridge translates Claude Code's Anthropic API into Ollama calls.
+    @Published var bridgeEngineRaw: String {
+        didSet { defaults.set(bridgeEngineRaw, forKey: "bridgeEngineRaw") }
+    }
+    /// Port for the LiteLLM proxy (kept separate from the built-in router's).
+    @Published var litellmPort: Int {
+        didSet { defaults.set(litellmPort, forKey: "litellmPort") }
+    }
     @Published var routerPort: Int {
         didSet { defaults.set(routerPort, forKey: "routerPort") }
     }
@@ -84,6 +92,8 @@ final class AppSettings: ObservableObject {
         effortLevelRaw = defaults.string(forKey: "effortLevelRaw") ?? EffortLevel.high.rawValue
         ollamaBaseURL = defaults.string(forKey: "ollamaBaseURL") ?? "http://localhost:11434"
         routerPort = defaults.integer(forKey: "routerPort") == 0 ? 8787 : max(1024, min(65535, defaults.integer(forKey: "routerPort")))
+        bridgeEngineRaw = defaults.string(forKey: "bridgeEngineRaw") ?? BridgeEngine.builtin.rawValue
+        litellmPort = defaults.integer(forKey: "litellmPort") == 0 ? 4000 : max(1024, min(65535, defaults.integer(forKey: "litellmPort")))
         ollamaNumCtx = defaults.integer(forKey: "ollamaNumCtx") == 0 ? 16384 : defaults.integer(forKey: "ollamaNumCtx")
         ollamaMaxPredict = defaults.object(forKey: "ollamaMaxPredict") as? Int ?? 0
         streamPartialMessages = defaults.object(forKey: "streamPartialMessages") as? Bool ?? true
@@ -163,4 +173,10 @@ final class AppSettings: ObservableObject {
     }
 
     var routerBaseURL: String { "http://127.0.0.1:\(routerPort)" }
+    var litellmBaseURL: String { "http://127.0.0.1:\(litellmPort)" }
+
+    var bridgeEngine: BridgeEngine {
+        get { BridgeEngine(rawValue: bridgeEngineRaw) ?? .builtin }
+        set { bridgeEngineRaw = newValue.rawValue }
+    }
 }

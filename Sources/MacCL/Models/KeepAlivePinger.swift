@@ -24,9 +24,12 @@ final class KeepAlivePinger {
     // MARK: - Lifecycle
 
     /// Start pinging the proxy at the given port.  Stops any previous timer first.
-    func start(port: Int) {
+    /// - Parameter healthPath: bridge-specific liveness endpoint. LiteLLM's
+    ///   `/health` runs a real inference check per model, so it must be pinged on
+    ///   `/health/liveliness` instead.
+    func start(port: Int, healthPath: String = "/health") {
         stop()
-        let url = URL(string: "http://127.0.0.1:\(port)/health")
+        let url = URL(string: "http://127.0.0.1:\(port)\(healthPath)")
         guard let u = url else { return }
         targetURL = u
 

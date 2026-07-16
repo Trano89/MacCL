@@ -24,9 +24,11 @@ final class ModelRouter {
             return [:]
         case .ollama, .ollamaNetwork:
             usedModels.insert(model.modelArg)
-            let baseUrl = model.provider == .ollama
-                ? settings.routerBaseURL
-                : settings.ollamaBaseURL
+            // Always go through a local bridge: raw Ollama speaks /api/chat, not
+            // the Anthropic Messages API that Claude Code sends.
+            let baseUrl = settings.bridgeEngine == .litellm
+                ? settings.litellmBaseURL
+                : settings.routerBaseURL
             let a = "ANTHROPIC_"
             return [
                 "\(a)BASE_URL": baseUrl,
@@ -62,6 +64,17 @@ final class ModelRouter {
             }
         }
 
+        // LiteLLM bridge: hand off to the Python proxy instead of the Node one.
+        if settings.bridgeEngine == .litellm {
+            guard settings.litellmPort >= 1024 && settings.litellmPort <= 65535 else {
+                return L10n.t("invalid_port")
+            }
+            proxy.stop() // only one bridge at a time
+            return await litellm.ensureRunning(port: settings.litellmPort,
+                                               ollamaBaseURL: settings.ollamaBaseURL)
+        }
+
+        litellm.stop()
         let err = await proxy.ensureRunning(port: settings.routerPort,
                                             ollamaBaseURL: settings.ollamaBaseURL,
                                             numCtx: settings.ollamaNumCtx,
@@ -70,9 +83,22 @@ final class ModelRouter {
         return err
     }
 
+    /// The LiteLLM bridge (installed on demand into Application Support).
+    let litellm = LiteLLMProcess()
+
+    /// Port the active bridge listens on — used for keep-alive pings.
+    func activeBridgePort(settings: AppSettings) -> Int {
+        settings.bridgeEngine == .litellm ? settings.litellmPort : settings.routerPort
+    }
+
+    /// Liveness path of the active bridge (LiteLLM's `/health` is expensive).
+    func activeBridgeHealthPath(settings: AppSettings) -> String {
+        settings.bridgeEngine == .litellm ? "/health/liveliness" : "/health"
+    }
+
     /// Start keep-alive pings for the current proxy port.  Call this when a model is selected.
-    func startKeepAlive(port: Int) {
-        pinger.start(port: port)
+    func startKeepAlive(port: Int, healthPath: String = "/health") {
+        pinger.start(port: port, healthPath: healthPath)
     }
 
     /// Stop keep-alive pings.  Call when switching away from Ollama or clearing selection.
@@ -86,6 +112,7 @@ final class ModelRouter {
     func shutdown() {
         pinger.stop()
         proxy.stop()
+        litellm.stop()
     }
 
     /// Called on app quit: unload the models we loaded, then stop the router.
@@ -97,6 +124,7 @@ final class ModelRouter {
             unloadSync(model: model, baseURL: baseURL)
         }
         proxy.stop()
+        litellm.stop()
     }
 
     private func unloadSync(model: String, baseURL: String) {
