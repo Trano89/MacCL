@@ -473,6 +473,9 @@ final class ChatViewModel: ObservableObject {
         do {
             sessionEpoch = .init()     // fresh epoch for the new session; old callbacks die
             let resumed = resumeOnNextStart
+            AppLog.write("session", "start model=\(model.modelArg) provider=\(model.provider.rawValue) "
+                         + "bridge=\(settings.bridgeEngine.rawValue) base=\(extraEnv["ANTHROPIC_BASE_URL"] ?? "direct") "
+                         + "ctx=\(settings.ollamaNumCtx) effort=\(settings.effortLevel.cliValue) resume=\(resumed)")
             try session.start(config: config, firstContent: blocks, resume: resumed)
             resumeOnNextStart = false
             appendNotice(.info, launchCommandLine(model: model, sessionId: sid, resumed: resumed))
@@ -674,6 +677,7 @@ final class ChatViewModel: ObservableObject {
         // Redact potential secrets before storing — avoid leaking API keys / tokens.
         let redacted = secretRedactor.redact(s)
         stderrTail = String((stderrTail + redacted).suffix(maxStderrTail))
+        AppLog.write("claude", redacted)
     }
 
     /// Match actual Claude Code v2.x context-limit error messages.
@@ -711,12 +715,21 @@ final class ChatViewModel: ObservableObject {
         watchdog?.cancel()
         waitingHint = nil
         autoCompacting = false
+        let wasRunning = isRunning
         isRunning = false
-        if code != 0 && !sawResultSinceLastTurn {
-            let _ = stderrTail.isEmpty ? "" : "\n\n\(stderrTail.trimmingCharacters(in: .whitespacesAndNewlines))"
-            appendNotice(.error, L10n.t("session_terminated", String(code)))
+        AppLog.write("claude", "session exited: code=\(code) sawResult=\(sawResultSinceLastTurn) wasRunning=\(wasRunning)")
+        // A turn that ends without a result produced nothing. Surface it even when
+        // the exit code is 0 — a silent exit used to leave the UI blank after
+        // minutes of work ("it ran two minutes then nothing"). Skip only when the
+        // user interrupted on purpose.
+        if wasRunning && !sawResultSinceLastTurn && !didInterrupt {
+            let hint = stderrTail.trimmingCharacters(in: .whitespacesAndNewlines)
+            var message = L10n.t("session_terminated", String(code))
+            if !hint.isEmpty { message += "\n\n" + hint }
+            appendNotice(.error, message)
             statusLine = L10n.t("session_stopped")
         }
+        didInterrupt = false
         persist()
     }
 

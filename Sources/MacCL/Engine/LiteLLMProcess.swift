@@ -157,7 +157,14 @@ final class LiteLLMProcess {
         let errPipe = Pipe()
         p.standardError = errPipe
         p.standardOutput = Pipe()
-        errPipe.fileHandleForReading.readabilityHandler = { h in _ = h.availableData }
+        errPipe.fileHandleForReading.readabilityHandler = { h in
+            let data = h.availableData
+            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+            AppLog.write("litellm", text)
+        }
+        p.terminationHandler = { proc in
+            AppLog.write("litellm", "proxy exited: code=\(proc.terminationStatus)")
+        }
         do {
             try p.run()
         } catch {

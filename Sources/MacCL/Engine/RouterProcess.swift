@@ -47,12 +47,15 @@ final class RouterProcess {
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = BinaryLocator.mergedPATH(base: env["PATH"])
         proc.environment = env
-        // Keep the router quiet; it logs to stderr which we drain.
+        // Router stderr carries the stall-watchdog verdicts and Ollama errors —
+        // persist it, otherwise failures leave no trace to diagnose.
         let errPipe = Pipe()
         proc.standardError = errPipe
         proc.standardOutput = Pipe()
         errPipe.fileHandleForReading.readabilityHandler = { h in
-            _ = h.availableData // drained; router logs are best-effort
+            let data = h.availableData
+            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+            AppLog.write("router", text)
         }
 
         do {
