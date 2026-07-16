@@ -2,12 +2,15 @@
 import PackageDescription
 
 let package = Package(
-    name: "ClaudeMac",
+    name: "MacCL",
     platforms: [.macOS(.v14)],
     targets: [
         .executableTarget(
-            name: "ClaudeMac",
-            path: "Sources/ClaudeMac",
+            name: "MacCL",
+            path: "Sources/MacCL",
+            resources: [
+                .copy("../../router/anthropic-ollama-proxy.mjs"),
+            ],
             swiftSettings: [
                 // Keep Swift 5 concurrency semantics: this app drives a subprocess
                 // with plenty of callback plumbing; strict Swift 6 concurrency would

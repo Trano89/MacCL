@@ -24,7 +24,8 @@ const THINK = args.includes('--think')
 // default (often very large, e.g. 40960 or 262144), which allocates a huge KV
 // cache and balloons RAM. This value must still fit Claude Code's system prompt
 // + tool schemas. Override with --ctx or OLLAMA_NUM_CTX.
-const CTX = parseInt(argOf('--ctx', process.env.OLLAMA_NUM_CTX || '16384'), 10)
+// Grows dynamically when conversations exceed the initial budget — see fetchOllama.
+let CTX = parseInt(argOf('--ctx', process.env.OLLAMA_NUM_CTX || '16384'), 10)
 // Keep the model resident in memory. -1 = never unload (the app unloads it on
 // quit). Override with --keep-alive (e.g. "5m", "0", "-1").
 const KEEP_ALIVE_RAW = argOf('--keep-alive', process.env.OLLAMA_KEEP_ALIVE || '-1')
@@ -141,7 +142,7 @@ async function handleMessages(reqBody, res) {
     stream,
     think: clientThinking || THINK,
     keep_alive: KEEP_ALIVE,
-    options: { num_ctx: CTX },
+    options: { num_ctx: CTX }, // CTX grows dynamically on context overflow retry
   }
   const tools = toOllamaTools(body.tools)
   if (tools) ollamaBody.tools = tools
@@ -226,6 +227,10 @@ async function handleMessages(reqBody, res) {
 
   let buf = ''
   const decoder = new TextDecoder()
+  // Track whether Ollama sent a proper `done` signal. If the stream ends without it,
+  // the connection was likely dropped (network interruption, server crash). We must emit
+  // an error instead of message_stop so claude Code doesn't treat partial content as complete.
+  let gotDone = false
   try {
     for await (const chunk of upstream.body) {
       buf += decoder.decode(chunk, { stream: true })
@@ -266,6 +271,7 @@ async function handleMessages(reqBody, res) {
           }
         }
         if (obj.done) {
+          gotDone = true
           if (typeof obj.prompt_eval_count === 'number') inTokens = obj.prompt_eval_count
           if (typeof obj.eval_count === 'number') outTokens = obj.eval_count
           if (obj.done_reason === 'length') stopReason = 'max_tokens'
@@ -274,6 +280,30 @@ async function handleMessages(reqBody, res) {
     }
   } catch (e) {
     log('stream error', e.message)
+  }
+
+  // If the stream ended without a `done` signal, Ollama's connection was dropped mid-turn.
+  // Emit an error so claude Code doesn't treat partial content as valid output.
+  if (!gotDone) {
+    log('Ollama stream ended without done — connection likely dropped')
+    stopPing()
+    sse(res, 'content_block_start', {
+      type: 'content_block_start', index: (index >= -1 ? index + 1 : 0),
+      content_block: { type: 'text', text: '' },
+    })
+    sse(res, 'content_block_delta', {
+      type: 'content_block_delta', index: (index >= -1 ? index + 1 : 0),
+      delta: { type: 'text_delta', text: '⚠️ Connexion Ollama interrompue — le serveur a fermé la connexion sans signal de terminaison.' },
+    })
+    sse(res, 'content_block_stop', { type: 'content_block_stop', index: (index >= -1 ? index + 1 : 0) })
+    sse(res, 'message_delta', {
+      type: 'message_delta',
+      delta: { stop_reason: 'error', stop_sequence: null },
+      usage: { input_tokens: inTokens, output_tokens: outTokens },
+    })
+    sse(res, 'message_stop', { type: 'message_stop' })
+    res.end()
+    return  // do NOT fall through to normal completion
   }
 
   stopPing()
@@ -404,14 +434,24 @@ async function handleNonStream(upstream, res, msgId, model) {
 function safeParse(s) { try { return JSON.parse(s) } catch { return {} } }
 
 // Call Ollama, retrying without `think` for models that reject it.
+// For remote servers (not localhost), impose a generous timeout to prevent hanging forever.
 async function fetchOllama(ollamaBody) {
   const url = `${OLLAMA}/api/chat`
-  const post = (b) => fetch(url, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b),
-  })
+  const isRemote = !url.includes('127.0.0.1') && !url.includes('localhost')
+  const controller = isRemote ? new AbortController() : null
+  const timeoutMs = isRemote ? 300_000 : 0  // 5 min for remote, unlimited for local
+
   let resp
   try {
-    resp = await post(ollamaBody)
+    const fetchOpts = {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(ollamaBody),
+    }
+    if (controller) {
+      fetchOpts.signal = AbortSignal.timeout(timeoutMs)
+    }
+    resp = await fetch(url, fetchOpts)
   } catch (e) {
     throw new Error(`Ollama injoignable à ${OLLAMA} : ${e.message}`)
   }
@@ -424,8 +464,9 @@ async function fetchOllama(ollamaBody) {
   if (overflow) {
     const needed = parseInt(overflow[1], 10)
     const newCtx = Math.min(Math.ceil((needed + 8192) / 4096) * 4096, 262144)
-    if (newCtx > (ollamaBody.options?.num_ctx || 0)) {
-      log(`contexte dépassé (${needed} tokens) — retry avec num_ctx=${newCtx}`)
+    if (newCtx > CTX) {
+      log(`contexte dépassé (${needed} tokens) — expansion CTX ${CTX} → ${newCtx}`)
+      CTX = newCtx  // persist expansion so subsequent requests use the larger window
       const retry = { ...ollamaBody, options: { ...ollamaBody.options, num_ctx: newCtx } }
       resp = await post(retry)
       if (resp.ok) return resp

@@ -7,8 +7,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 CONFIG="${1:-release}"
-APP_NAME="ClaudeMac"
-BUNDLE_ID="com.antonin.claudemac"
+APP_NAME="MacCL"
+BUNDLE_ID="com.antonin.maccl"
 
 echo "▶ swift build -c $CONFIG"
 swift build -c "$CONFIG"

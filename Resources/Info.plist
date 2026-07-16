@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>ClaudeMac</string>
+    <string>MacCL</string>
     <key>CFBundleDisplayName</key>
-    <string>ClaudeMac</string>
+    <string>MacCL</string>
     <key>CFBundleIdentifier</key>
-    <string>com.antonin.claudemac</string>
+    <string>com.antonin.maccl</string>
     <key>CFBundleExecutable</key>
-    <string>ClaudeMac</string>
+    <string>MacCL</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -25,6 +25,6 @@
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.developer-tools</string>
     <key>NSHumanReadableCopyright</key>
-    <string>ClaudeMac — GUI native pour Claude Code</string>
+    <string>MacCL — GUI native pour Claude Code</string>
 </dict>
 </plist>
