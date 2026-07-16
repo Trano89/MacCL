@@ -581,8 +581,10 @@ private struct AppearanceTab: View {
 private struct AboutTab: View {
     @EnvironmentObject var settings: AppSettings
 
-    // TODO(<ant @your_paypal_username>): replace with your actual paypal.me link, e.g. https://paypal.me/MacCL
-    private static let donateURL = URL(string: "https://paypal.me/MacCL")!
+    // PayPal "donate to an email" flow — opens PayPal pre-filled for this address.
+    private static let donateEmail = "antonin.trottet@gmail.com"
+    private static let donateURL = URL(string:
+        "https://www.paypal.com/donate/?business=antonin.trottet%40gmail.com&currency_code=CHF")!
 
     @State private var showThanks = false
 
@@ -591,7 +593,6 @@ private struct AboutTab: View {
             Section(L10n.t("about")) {
                 LabeledContent(L10n.t("version"), value: "MacCL 0.1.0")
                 Text(L10n.t("about_text"))
-                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
@@ -599,14 +600,12 @@ private struct AboutTab: View {
                 VStack(alignment: .leading, spacing: 8) {
                     // Developer credit
                     Text(L10n.t("thanks_by"))
-                        .font(.caption)
                         .foregroundStyle(.secondary)
 
                     Divider()
 
                     // Support paragraph
                     Text(L10n.t("thanks_support"))
-                        .font(.caption)
                         .foregroundStyle(.secondary)
 
                     // PayPal donation button
@@ -618,7 +617,6 @@ private struct AboutTab: View {
                                 Text(L10n.t("donate"))
                                     .fontWeight(.semibold)
                                 Text("via PayPal")
-                                    .font(.caption2)
                                     .foregroundStyle(.secondary)
                             }
                         }
@@ -630,6 +628,12 @@ private struct AboutTab: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(L10n.t("donate") + " via PayPal")
+
+                    // The address, so it's verifiable and usable in the PayPal app.
+                    Text(verbatim: Self.donateEmail)
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
                 }
             }
 
