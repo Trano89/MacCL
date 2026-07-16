@@ -144,6 +144,16 @@ enum L10n {
         "select_instruction": ("Sélectionnez une instruction, ou créez-en une.", "Select an instruction, or create one.", "Wählen Sie eine Anweisung oder erstellen Sie eine.", "Selecione uma instrução ou crie uma.", "Selecciona una instrucción o crea una."),
         "file_name": ("nom du fichier", "file name", "Dateiname", "nome do ficheiro", "nombre del archivo"),
 
+        // Groups & per-conversation / project instructions
+        "group": ("Groupe", "Group", "Gruppe", "Grupo", "Grupo"),
+        "new_group": ("Nouveau groupe", "New group", "Neue Gruppe", "Novo grupo", "Nuevo grupo"),
+        "no_group": ("Retirer du groupe", "Remove from group", "Aus Gruppe entfernen", "Remover do grupo", "Quitar del grupo"),
+        "group_name": ("nom du groupe", "group name", "Gruppenname", "nome do grupo", "nombre del grupo"),
+        "conv_instructions": ("Instructions de cette conversation (optionnel)", "Instructions for this conversation (optional)", "Anweisungen für diese Unterhaltung (optional)", "Instruções para esta conversa (opcional)", "Instrucciones para esta conversación (opcional)"),
+        "library": ("Bibliothèque", "Library", "Bibliothek", "Biblioteca", "Biblioteca"),
+        "project_md": ("Projet (CLAUDE.md)", "Project (CLAUDE.md)", "Projekt (CLAUDE.md)", "Projeto (CLAUDE.md)", "Proyecto (CLAUDE.md)"),
+        "project_hint": ("Instructions du dossier de travail — Claude Code lit CLAUDE.md automatiquement dans ce dossier.", "Working-folder instructions — Claude Code reads CLAUDE.md from that folder automatically.", "Anweisungen des Arbeitsordners — Claude Code liest CLAUDE.md dort automatisch.", "Instruções da pasta de trabalho — o Claude Code lê o CLAUDE.md dessa pasta automaticamente.", "Instrucciones de la carpeta de trabajo — Claude Code lee CLAUDE.md de esa carpeta automáticamente."),
+
         // Permission modes
         "perm_bypass": ("Tous les outils (bypass)", "All tools (bypass)", "Alle Tools (Bypass)", "Todas as ferramentas (bypass)", "Todas las herramientas (bypass)"),
         "perm_accept": ("Éditions auto", "Auto-accept edits", "Automatische Bearbeitungen", "Edições automáticas", "Ediciones automáticas"),

@@ -10,23 +10,74 @@ struct InstructionsView: View {
     @State private var editorText: String = ""
     @State private var showNew = false
     @State private var newName = ""
+    @State private var tab = 0                 // 0 = library, 1 = project CLAUDE.md
+    @State private var projectText: String = ""
 
     private var selectedFile: InstructionFile? { store.files.first { $0.id == selection } }
 
+    private var projectFileURL: URL {
+        URL(fileURLWithPath: AppSettings.shared.workingDirectory)
+            .appendingPathComponent("CLAUDE.md")
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                fileList
-                Divider()
-                editor
+            Picker("", selection: $tab) {
+                Text(L10n.t("library")).tag(0)
+                Text(L10n.t("project_md")).tag(1)
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(10)
             Divider()
-            bottomBar
+
+            if tab == 0 {
+                HStack(spacing: 0) {
+                    fileList
+                    Divider()
+                    editor
+                }
+                Divider()
+                bottomBar
+            } else {
+                projectEditor
+            }
         }
-        .frame(width: 760, height: 480)
+        .frame(width: 760, height: 500)
         .onAppear {
             if selection == nil { selection = store.files.first?.id }
             editorText = selectedFile?.read() ?? ""
+            projectText = (try? String(contentsOf: projectFileURL, encoding: .utf8)) ?? ""
+        }
+    }
+
+    /// Editor for the working folder's CLAUDE.md — Claude Code reads it natively.
+    private var projectEditor: some View {
+        VStack(spacing: 0) {
+            TextEditor(text: $projectText)
+                .font(.system(.body, design: .monospaced))
+                .padding(6)
+            Divider()
+            HStack(spacing: 10) {
+                Text(projectFileURL.path)
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Text(L10n.t("project_hint"))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Button(L10n.t("save")) {
+                    try? projectText.write(to: projectFileURL, atomically: true, encoding: .utf8)
+                }
+                Button(L10n.t("close")) {
+                    try? projectText.write(to: projectFileURL, atomically: true, encoding: .utf8)
+                    dismiss()
+                }
+                .tint(Theme.accent)
+            }
+            .padding(10)
         }
     }
 

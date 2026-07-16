@@ -12,6 +12,10 @@ struct Conversation: Identifiable, Codable {
     // Per-conversation launch parameters (optional: older files lack them).
     var permissionMode: String?
     var effort: String?
+    /// Extra instructions appended to the system prompt for THIS conversation.
+    var instructions: String?
+    /// User-defined group name for organizing the sidebar.
+    var group: String?
     var items: [ChatItem]
     var totalCostUSD: Double
 }
@@ -22,6 +26,7 @@ struct ConversationSummary: Identifiable, Codable, Hashable {
     var title: String
     var updatedAt: Date
     var modelId: String
+    var group: String?
 }
 
 /// Stores conversations as one JSON file each under Application Support.
@@ -75,5 +80,20 @@ final class ConversationStore: ObservableObject {
         try? FileManager.default.removeItem(
             at: AppPaths.conversations.appendingPathComponent("\(id).json"))
         reload()
+    }
+
+    /// Assign (or clear, with nil) a conversation's group.
+    func setGroup(_ id: String, group: String?) {
+        guard var convo = load(id) else { return }
+        convo.group = group?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if convo.group?.isEmpty == true { convo.group = nil }
+        save(convo)
+    }
+
+    /// Distinct group names in use, sorted.
+    var groupNames: [String] {
+        Array(Set(summaries.compactMap(\.group))).sorted {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
     }
 }

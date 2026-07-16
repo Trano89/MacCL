@@ -53,6 +53,9 @@ final class ChatViewModel: ObservableObject {
 
     /// Slash commands reported by the running claude session (init event).
     @Published var slashCommands: [String] = []
+    /// Extra instructions for THIS conversation (appended to the system prompt).
+    @Published var conversationInstructions: String = ""
+    private var currentGroup: String?
 
     private let settings: AppSettings
     private var session = ClaudeSession()
@@ -244,6 +247,8 @@ final class ChatViewModel: ObservableObject {
         _streamingItemId = nil
         isRunning = false
         statusLine = L10n.t("new_conversation")
+        conversationInstructions = ""
+        currentGroup = nil
         agentMonitor.clearAll()
         stopTurnTimer()
     }
@@ -278,6 +283,14 @@ final class ChatViewModel: ObservableObject {
         }
         if let pm = convo.permissionMode { settings.permissionModeRaw = pm }
         if let ef = convo.effort { settings.effortLevelRaw = ef }
+        conversationInstructions = convo.instructions ?? ""
+        currentGroup = convo.group
+    }
+
+    /// Assign a conversation to a group (nil clears it).
+    func assignGroup(_ summary: ConversationSummary, group: String?) {
+        ConversationStore.shared.setGroup(summary.id, group: group)
+        if summary.id == currentConversationId { currentGroup = group }
     }
 
     func deleteConversation(_ summary: ConversationSummary) {
@@ -298,10 +311,22 @@ final class ChatViewModel: ObservableObject {
             workingDirectory: settings.workingDirectory,
             permissionMode: settings.permissionModeRaw,
             effort: settings.effortLevelRaw,
+            instructions: conversationInstructions.isEmpty ? nil : conversationInstructions,
+            group: currentGroup,
             items: items,
             totalCostUSD: totalCostUSD
         )
         ConversationStore.shared.save(convo)
+    }
+
+    /// Library instructions + this conversation's own instructions.
+    private func composedSystemPrompt() -> String {
+        var parts: [String] = []
+        let lib = InstructionsStore.shared.combinedPrompt()
+        if !lib.isEmpty { parts.append(lib) }
+        let conv = conversationInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !conv.isEmpty { parts.append(conv) }
+        return parts.joined(separator: "\n\n---\n\n")
     }
 
     private func conversationTitle() -> String {
@@ -410,7 +435,7 @@ final class ChatViewModel: ObservableObject {
             model: model,
             permissionMode: settings.permissionMode,
             effort: settings.effortLevel,
-            appendSystemPrompt: InstructionsStore.shared.combinedPrompt(),
+            appendSystemPrompt: composedSystemPrompt(),
             streamPartial: settings.streamPartialMessages,
             sessionId: sid,
             extraEnv: extraEnv

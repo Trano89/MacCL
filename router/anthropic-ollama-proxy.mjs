@@ -33,6 +33,9 @@ const KEEP_ALIVE = Number.isNaN(Number(KEEP_ALIVE_RAW)) ? KEEP_ALIVE_RAW : Numbe
 // Max output tokens (num_predict). 0 = follow the client's max_tokens,
 // -1 = unlimited (generate until stop or the context fills). Bounded by CTX.
 const MAX_PREDICT = parseInt(argOf('--max-predict', process.env.OLLAMA_MAX_PREDICT || '0'), 10)
+// Ghost-work watchdog: after this much stream inactivity, probe the server and
+// abort the turn if it's gone (see handleMessages). Override with --stall (ms).
+const STALL_MS = Math.max(5_000, parseInt(argOf('--stall', process.env.OLLAMA_STALL_MS || '60000'), 10))
 
 const log = (...a) => console.error('[router]', ...a)
 const rid = (p) => p + crypto.randomBytes(12).toString('hex')
@@ -189,15 +192,51 @@ async function handleMessages(reqBody, res) {
     },
   })
   let pinger = setInterval(() => { try { sse(res, 'ping', { type: 'ping' }) } catch {} }, 4000)
-  const stopPing = () => { if (pinger) { clearInterval(pinger); pinger = null } }
-  res.on('close', stopPing)
+
+  // Ghost-work watchdog. Our keepalive pings keep claude waiting forever, so a
+  // dead Ollama stream (remote machine asleep, runner crashed, network drop
+  // without RST) would look like "still working" indefinitely. Track stream
+  // activity; when it stalls, probe the server and abort with a visible error.
+  const controller = new AbortController()
+  let lastActivity = Date.now()
+  let bodyStarted = false
+  let stalled = null // reason string when the watchdog aborted
+  let probing = false
+  const stallTimer = setInterval(async () => {
+    if (probing || stalled) return
+    const idle = Date.now() - lastActivity
+    if (idle < STALL_MS) return
+    probing = true
+    // Before the first byte: the model may be (cold-)loading → only require the
+    // server to answer. Once generating: the model must still be loaded in /api/ps.
+    const alive = bodyStarted ? await modelStillRunning(ollamaBody.model) : await serverReachable()
+    probing = false
+    const idleNow = Date.now() - lastActivity
+    const hardCap = bodyStarted ? STALL_MS * 5 : STALL_MS * 10
+    if (!alive) {
+      stalled = `le serveur Ollama ne répond plus (${Math.round(idleNow / 1000)}s sans données)`
+      log(`stall: ${stalled} — abandon du tour`)
+      controller.abort()
+    } else if (idleNow > hardCap) {
+      stalled = `génération bloquée (${Math.round(idleNow / 1000)}s sans données alors que le serveur répond)`
+      log(`stall: ${stalled} — abandon du tour`)
+      controller.abort()
+    }
+  }, 10_000)
+
+  const stopPing = () => {
+    if (pinger) { clearInterval(pinger); pinger = null }
+    clearInterval(stallTimer)
+  }
+  // Client gone (interrupt, app quit): stop wasting the backend too.
+  res.on('close', () => { stopPing(); controller.abort() })
 
   let upstream
   try {
-    upstream = await fetchOllama(ollamaBody)
+    upstream = await fetchOllama(ollamaBody, controller.signal)
   } catch (e) {
     stopPing()
-    return emitStreamError(res, e.message)
+    return emitStreamError(res, stalled ? `Travail interrompu : ${stalled}.` : e.message)
   }
 
   // Buffer the whole turn, then emit content blocks. Buffering lets us recover
@@ -233,6 +272,8 @@ async function handleMessages(reqBody, res) {
   let gotDone = false
   try {
     for await (const chunk of upstream.body) {
+      lastActivity = Date.now()
+      bodyStarted = true
       buf += decoder.decode(chunk, { stream: true })
       let nl
       while ((nl = buf.indexOf('\n')) >= 0) {
@@ -282,10 +323,14 @@ async function handleMessages(reqBody, res) {
     log('stream error', e.message)
   }
 
-  // If the stream ended without a `done` signal, Ollama's connection was dropped mid-turn.
-  // Emit an error so claude Code doesn't treat partial content as valid output.
+  // If the stream ended without a `done` signal, Ollama's connection was dropped
+  // mid-turn (or our stall watchdog aborted it). Emit an error so claude Code
+  // doesn't treat partial content as valid output.
   if (!gotDone) {
-    log('Ollama stream ended without done — connection likely dropped')
+    const reason = stalled
+      ? `⚠️ Travail interrompu : ${stalled}. Vérifiez le serveur Ollama (machine allumée, \`ollama serve\` actif) puis renvoyez votre message.`
+      : '⚠️ Connexion Ollama interrompue — le serveur a fermé la connexion sans signal de terminaison.'
+    log('Ollama stream ended without done — ' + (stalled || 'connection likely dropped'))
     stopPing()
     sse(res, 'content_block_start', {
       type: 'content_block_start', index: (index >= -1 ? index + 1 : 0),
@@ -293,7 +338,7 @@ async function handleMessages(reqBody, res) {
     })
     sse(res, 'content_block_delta', {
       type: 'content_block_delta', index: (index >= -1 ? index + 1 : 0),
-      delta: { type: 'text_delta', text: '⚠️ Connexion Ollama interrompue — le serveur a fermé la connexion sans signal de terminaison.' },
+      delta: { type: 'text_delta', text: reason },
     })
     sse(res, 'content_block_stop', { type: 'content_block_stop', index: (index >= -1 ? index + 1 : 0) })
     sse(res, 'message_delta', {
@@ -433,25 +478,41 @@ async function handleNonStream(upstream, res, msgId, model) {
 
 function safeParse(s) { try { return JSON.parse(s) } catch { return {} } }
 
-// Call Ollama, retrying without `think` for models that reject it.
-// For remote servers (not localhost), impose a generous timeout to prevent hanging forever.
-async function fetchOllama(ollamaBody) {
+// Quick health probes used by the stall watchdog.
+async function serverReachable() {
+  try {
+    const r = await fetch(`${OLLAMA}/api/tags`, { signal: AbortSignal.timeout(5000) })
+    return r.ok
+  } catch { return false }
+}
+
+async function modelStillRunning(model) {
+  try {
+    const r = await fetch(`${OLLAMA}/api/ps`, { signal: AbortSignal.timeout(5000) })
+    if (!r.ok) return false
+    const d = await r.json().catch(() => null)
+    return ((d && d.models) || []).some((m) => m.name === model || m.model === model)
+  } catch { return false }
+}
+
+// Call Ollama, retrying without `think` for models that reject it. The caller's
+// AbortSignal (stall watchdog / client disconnect) governs cancellation — no
+// blanket timeout here, long legitimate generations must survive.
+async function fetchOllama(ollamaBody, signal) {
   const url = `${OLLAMA}/api/chat`
-  const isRemote = !url.includes('127.0.0.1') && !url.includes('localhost')
-  const controller = isRemote ? new AbortController() : null
-  const timeoutMs = isRemote ? 300_000 : 0  // 5 min for remote, unlimited for local
+  const post = (b) => {
+    const opts = {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(b),
+    }
+    if (signal) opts.signal = signal
+    return fetch(url, opts)
+  }
 
   let resp
   try {
-    const fetchOpts = {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(ollamaBody),
-    }
-    if (controller) {
-      fetchOpts.signal = AbortSignal.timeout(timeoutMs)
-    }
-    resp = await fetch(url, fetchOpts)
+    resp = await post(ollamaBody)
   } catch (e) {
     throw new Error(`Ollama injoignable à ${OLLAMA} : ${e.message}`)
   }

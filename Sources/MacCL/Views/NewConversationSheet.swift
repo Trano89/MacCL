@@ -14,6 +14,7 @@ struct NewConversationSheet: View {
     @State private var workingDirectory = ""
     @State private var permission: PermissionMode = .bypassPermissions
     @State private var effort: EffortLevel = .high
+    @State private var convInstructions = ""
 
     private var model: LLMModel? { vm.availableModels.first { $0.id == modelId } }
 
@@ -59,6 +60,12 @@ struct NewConversationSheet: View {
                     }
                 }
 
+                Section(L10n.t("conv_instructions")) {
+                    TextEditor(text: $convInstructions)
+                        .font(.system(.body, design: .monospaced))
+                        .frame(minHeight: 60, maxHeight: 100)
+                }
+
                 Section(L10n.t("equivalent_cmd")) {
                     Text(verbatim: commandPreview)
                         .font(.system(.body, design: .monospaced))
@@ -87,6 +94,7 @@ struct NewConversationSheet: View {
             workingDirectory = settings.workingDirectory
             permission = settings.permissionMode
             effort = settings.effortLevel
+            convInstructions = vm.conversationInstructions
         }
     }
 
@@ -126,6 +134,7 @@ struct NewConversationSheet: View {
         settings.permissionMode = permission
         settings.effortLevel = effort
         vm.newConversation()
+        vm.conversationInstructions = convInstructions // after reset, applies to this conversation
         dismiss()
     }
 }
