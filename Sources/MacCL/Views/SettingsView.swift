@@ -4,13 +4,9 @@ import AppKit
 struct SettingsView: View {
     @EnvironmentObject var settings: AppSettings
 
-    @State private var scanning = false
-    @State private var scannedOnce = false
-    @State private var discovered: [OllamaDiscovery.Server] = []
-
     var body: some View {
         TabView {
-            GeneralTab(scanning: $scanning, scannedOnce: $scannedOnce, discovered: $discovered)
+            GeneralTab()
                 .tabItem { Label("Général", systemImage: "gearshape") }
             AppearanceTab()
                 .tabItem { Label("Apparence", systemImage: "swatchpalette") }
@@ -26,27 +22,9 @@ struct SettingsView: View {
 private struct GeneralTab: View {
     @EnvironmentObject var settings: AppSettings
 
-    // Use environment state from parent SettingsView to avoid duplicate scanning state.
-    @Binding var scanning: Bool
-    @Binding var scannedOnce: Bool
-    @Binding var discovered: [OllamaDiscovery.Server]
-
-    @State private var addingSource: ServerAddSource = .manual
-    @State private var manualUrl = ""
-
-    // MARK: - Server health check state
-
-    /// Health status for each standby server — keyed by its unique ID.
-    /// `nil` means no check has run yet (shows dashed circle icon).
-    @State private var serverHealth: [String: Bool] = [:]   // true=reachable, false=unreachable
     @State private var litellmInstalling = false
     @State private var litellmMessage = ""
     @State private var litellmFailed = false
-
-    // MARK: - Delete confirmation sheet
-
-    /// ID of the server pending removal; nil hides the confirmation dialog.
-    @State private var pendingRemoveId: String?
 
     private var detectedClaude: String {
         BinaryLocator.find("claude", override: settings.claudePathOverride) ?? L10n.t("not_found")
@@ -82,7 +60,13 @@ private struct GeneralTab: View {
                 }
             }
 
-            serverSection
+            // The Ollama server is a per-conversation choice now — it's asked
+            // in the new-conversation sheet, not a global preference.
+            Section(L10n.t("conv_server")) {
+                Text(L10n.t("server_per_conv_note"))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             bridgeSection
 
@@ -104,317 +88,6 @@ private struct GeneralTab: View {
             contextSection
         }
         .formStyle(.grouped)
-        // Confirmation sheet for server deletion — prevents accidental removal.
-        .confirmationDialog(
-            L10n.t("confirm_remove_server_title"),
-            isPresented: Binding(
-                get: { pendingRemoveId != nil },
-                set: { if !$0 { pendingRemoveId = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button(L10n.t("confirm_yes"), role: .destructive) {
-                if let id = pendingRemoveId {
-                    settings.removeStandbyServer(id: id)
-                    serverHealth.removeValue(forKey: id)
-                    pendingRemoveId = nil
-                }
-            }
-        } message: {
-            if let server = standbyServerWithId(pendingRemoveId ?? "") {
-                Text(L10n.t("confirm_remove_server_message", server.name))
-            }
-        }
-    }
-
-    // MARK: - Server section with real-time validation
-
-    private var serverSection: some View {
-        Section(L10n.t("ollama_server")) {
-            // Primary server URL field with live validation feedback.
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    TextField(
-                        L10n.t("add_server_placeholder"),
-                        text: $settings.ollamaBaseURL
-                    )
-                        .font(.system(.caption, design: .monospaced))
-
-                    Button(action: { Task { await scan() } }) {
-                        if scanning {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Label(L10n.t("scan"), systemImage: "antenna.radiowaves.left.and.right")
-                        }
-                    }
-                    .disabled(scanning)
-                }
-
-                // Live validation bar — shows green/red status based on URL validity.
-                validationBar(text: settings.ollamaBaseURL)
-            }
-
-            if !discovered.isEmpty {
-                ForEach(discovered) { server in
-                    Button {
-                        settings.ollamaBaseURL = server.url
-                    } label: {
-                        HStack(spacing: 9) {
-                            Image(systemName: settings.ollamaBaseURL == server.url
-                                  ? "checkmark.circle.fill" : "server.rack")
-                                .foregroundStyle(settings.ollamaBaseURL == server.url
-                                    ? settings.accentColor : .secondary)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(server.host)
-                                Text("\(server.modelCount) \(L10n.t("models_count")) · \(server.url)")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-            } else if scannedOnce && !scanning {
-                Text(L10n.t("no_server_hint"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text(L10n.t("scan_hint"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section(L10n.t("standby_servers")) {
-                if !settings.standbyServers.isEmpty {
-                    ForEach(settings.standbyServers) { server in
-                        standbyServerRow(server: server)
-                    }
-                }
-
-                Picker("", selection: $addingSource) {
-                    Text(L10n.t("manual_entry")).tag(ServerAddSource.manual)
-                    if !discovered.isEmpty { Text(L10n.t("scan")).tag(ServerAddSource.discovered) }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 180)
-
-                // Add server row with live URL validation on the input field.
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 8) {
-                        TextField(L10n.t("enter_url"), text: $manualUrl)
-                            .font(.system(.caption, design: .monospaced))
-                            .textFieldStyle(.roundedBorder)
-
-                        Button(action: { Task { await addServer() } }) {
-                            Text(L10n.t("add"))
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                        // Disable add button unless the URL validates.
-                        .disabled(manualUrl.isEmpty || !isValidatedURL(manualUrl))
-                    }
-
-                    // Inline validation feedback — text turns green/red based on real-time state.
-                    if !manualUrl.isEmpty {
-                        let (color, icon) = validationIndicator(manualUrl)
-                        HStack(spacing: 4) {
-                            Image(systemName: icon)
-                                .font(.caption2)
-                            Text(color == .green ? L10n.t("url_valid") : L10n.t("url_invalid_scheme"))
-                                .font(.caption2)
-                        }
-                        .foregroundStyle(color.opacity(0.85))
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: - Standby server row
-
-    /// Single row for a standby server with health indicator, active toggle, and delete button.
-    private func standbyServerRow(server: StandbyServer) -> some View {
-        let idx = settings.standbyServers.firstIndex { $0.id == server.id } ?? -1
-        let isActive = settings.currentStandbyIndex != nil &&
-                       settings.standbyServers[settings.currentStandbyIndex!] == server
-
-        return VStack(spacing: 2) {
-            HStack(spacing: 8) {
-                // Health indicator — small icon that reflects live server connectivity.
-                healthView(for: server)
-
-                // Server name and URL.
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(server.name)
-                        .font(.caption2.weight(.medium))
-                        .lineLimit(1)
-
-                    Text(server.url)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                Spacer()
-
-                // Remote server warning — yellow for non-localhost servers.
-                if let url = URL(string: server.url),
-                   url.host != "localhost" && url.host != "127.0.0.1" {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.caption2)
-                        .foregroundStyle(.orange.opacity(0.7))
-                        .help(L10n.t("remote_server_warning"))
-                }
-
-                // Activate button — switches this server to the active URL.
-                if idx >= 0 {
-                    Button(action: { Task { await activateServer(at: idx) } }) {
-                        Image(systemName: "arrow.right.circle")
-                            .foregroundStyle(.secondary.opacity(0.5))
-                    }
-                    .buttonStyle(.plain)
-                    .help(L10n.t("standby_active"))
-
-                    // Delete button — triggers confirmation dialog via pendingRemoveId.
-                    Button(action: { pendingRemoveId = server.id }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary.opacity(0.5))
-                    }
-                    .buttonStyle(.plain)
-                    .help(L10n.t("remove_server"))
-                }
-            }
-
-            // Active label when this server is the current one.
-            if isActive {
-                HStack(spacing: 4) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.caption2)
-                        .foregroundStyle(settings.accentColor)
-                    Text(L10n.t("standby_active"))
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(settings.accentColor.opacity(0.8))
-                }
-            }
-        }
-    }
-
-    // MARK: - Health indicator
-
-    /// Colored icon reflecting the server's live health status.
-    private func healthView(for server: StandbyServer) -> some View {
-        let reachable = serverHealth[server.id]
-        let (icon, color) = switch reachable {
-        case .some(true):  ("checkmark.circle.fill", Color.green)
-        case .some(false): ("xmark.circle.fill",     .red)
-        case .none:        ("circle.dashed",         .secondary)
-        }
-        return Image(systemName: icon)
-            .foregroundStyle(color)
-            .font(.caption2)
-            .onAppear {
-                guard serverHealth[server.id] == nil else { return }
-                Task {
-                    let reachable = await OllamaClient.isReachable(baseURL: server.url)
-                    await MainActor.run { serverHealth[server.id] = reachable }
-                }
-            }
-    }
-
-    // MARK: - URL validation helpers
-
-    /// Check if a text is a valid (possibly sanitized) server URL.
-    private func isValidatedURL(_ text: String) -> Bool {
-        !text.isEmpty && URLValidator.sanitizeAndValidate(text) != nil
-    }
-
-    /// Validation indicator tuple — (color, systemIcon) for inline feedback.
-    private func validationIndicator(_ text: String) -> (color: SwiftUI.Color, icon: String) {
-        guard let _ = URLValidator.sanitizeAndValidate(text) else {
-            return (.red, "exclamationmark.triangle")
-        }
-        return (.green, "checkmark.circle.fill")
-    }
-
-    /// Validation bar shown below the primary server URL field.
-    private func validationBar(text: String) -> some View {
-        let isValid = !text.isEmpty && URLValidator.sanitizeAndValidate(text) != nil
-        return HStack(spacing: 4) {
-            Image(systemName: isValid ? "checkmark.circle.fill" : "exclamationmark.triangle")
-                .font(.caption2)
-            Text(isValid ? L10n.t("url_valid") : L10n.t("url_empty"))
-                .font(.caption2)
-        }
-        .foregroundStyle(isValid ? .green.opacity(0.85) : .red.opacity(0.85))
-    }
-
-    // MARK: - Actions
-
-    private func scan() async {
-        scanning = true
-        discovered = await OllamaDiscovery.discover(port: 11434, configured: settings.ollamaBaseURL)
-        scannedOnce = true
-        scanning = false
-    }
-
-    /// Add a server from the manual entry field with validation and health check.
-    /// URLValidator.sanitizeAndValidate handles scheme auto-fix, so the user can type
-    /// "localhost:11434" and it becomes "http://localhost:11434" behind the scenes.
-    private func addServer() async {
-        guard !manualUrl.isEmpty else { return }
-
-        // Validate and sanitize — prevents adding malformed servers.
-        guard let _ = URLValidator.sanitizeAndValidate(manualUrl) else {
-            // User sees the red validation bar above; no crash, just rejected input.
-            return
-        }
-
-        var urlToUse: String
-        if manualUrl.hasPrefix("http://") || manualUrl.hasPrefix("https://") {
-            urlToUse = manualUrl.trimmingCharacters(in: .whitespaces)
-        } else {
-            urlToUse = "http://" + manualUrl.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-
-        guard let parsed = URL(string: urlToUse),
-              let host = parsed.host, !host.isEmpty else { return }
-
-        // Prevent adding the same host multiple times (e.g. duplicate localhost entries).
-        let existingHosts = Set(settings.standbyServers.map { $0.displayHost.lowercased() })
-        guard !existingHosts.contains(host.lowercased()) else { return }
-
-        // Check reachability BEFORE adding the server to the persistent list.
-        guard await OllamaClient.isReachable(baseURL: urlToUse) else {
-            return
-        }
-
-        let displayPort = parsed.port ?? 11434
-        let serverName = (displayPort == 11434) ? host : "\(host):\(displayPort)"
-        let server = StandbyServer(name: serverName, url: urlToUse)
-
-        // Deduplicate by URL — same as AppSettings.addStandbyServer behavior.
-        var list = settings.standbyServers
-        list.removeAll { $0.url == server.url }
-        list.append(server)
-        settings.standbyServers = list
-
-        // Record health status (true because we already checked reachability above).
-        await MainActor.run { serverHealth[server.id] = true }
-
-        manualUrl = ""
-    }
-
-    /// Activate a standby server at the given index, with health verification.
-    private func activateServer(at index: Int) async {
-        guard let err = await settings.activateStandby(at: index) else { return }
-        // If activation fails (e.g., server unreachable), the user sees the red health indicator.
-        _ = err
-    }
-
-    private func standbyServerWithId(_ id: String) -> StandbyServer? {
-        settings.standbyServers.first { $0.id == id }
     }
 
     // MARK: - Bridge engine (built-in router vs LiteLLM)
@@ -721,7 +394,3 @@ private struct AboutTab: View {
 
 // MARK: - Helpers
 
-private enum ServerAddSource: String, CaseIterable {
-    case manual
-    case discovered
-}

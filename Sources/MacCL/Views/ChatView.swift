@@ -10,6 +10,7 @@ struct ChatView: View {
     @State private var showInstructions = false
     @State private var showSlashCommands = false
     @State private var showModelPicker = false
+    @State private var showServerPicker = false
 
     private static let fallbackSlashCommands = [
         "compact", "context", "init", "review", "security-review", "usage",
@@ -85,6 +86,9 @@ struct ChatView: View {
 
     private var composer: some View {
         VStack(spacing: 8) {
+            if vm.isBlockedByServer {
+                serverDownBanner
+            }
             if !vm.attachments.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
@@ -176,16 +180,53 @@ struct ChatView: View {
         }
     }
 
-    // MARK: Inline controls (model, permissions, effort, folder, instructions)
+    // MARK: Inline controls (server, model, permissions, effort, folder, instructions)
 
     private var controlsBar: some View {
         HStack(spacing: 8) {
+            serverMenu
             modelMenu
             permissionMenu
             effortMenu
             folderButton
             instructionsButton
             Spacer(minLength: 0)
+        }
+    }
+
+    /// The conversation's bound server is down: say so, offer to change it,
+    /// and let the automatic watch lift the block when it's back.
+    private var serverDownBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "wifi.exclamationmark")
+                .foregroundStyle(.orange)
+            Text(L10n.t("server_unreachable_blocked", vm.serverHost))
+                .font(.callout)
+                .lineLimit(2)
+            Spacer()
+            Button(L10n.t("change_server")) { showServerPicker = true }
+                .controlSize(.small)
+        }
+        .padding(10)
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: Theme.corner))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.corner)
+                .stroke(Color.orange.opacity(0.4))
+        )
+    }
+
+    /// This conversation's own Ollama server (each conversation has one).
+    private var serverMenu: some View {
+        Button {
+            showServerPicker = true
+        } label: {
+            Label(vm.serverHost, systemImage: "server.rack")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .help(L10n.t("conv_server"))
+        .sheet(isPresented: $showServerPicker) {
+            ServerPickerSheet(vm: vm)
         }
     }
 

@@ -12,6 +12,9 @@ struct Conversation: Identifiable, Codable {
     // Per-conversation launch parameters (optional: older files lack them).
     var permissionMode: String?
     var effort: String?
+    /// The Ollama server THIS conversation talks to. A conversation is bound to
+    /// its server: if it's down the conversation waits — no silent fallback.
+    var serverURL: String?
     /// Extra instructions appended to the system prompt for THIS conversation.
     var instructions: String?
     /// User-defined group name for organizing the sidebar.

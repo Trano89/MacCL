@@ -21,8 +21,9 @@ enum OllamaClient {
         do {
             let (data, _) = try await URLSession.shared.data(for: request)
             let decoded = try JSONDecoder().decode(TagsResponse.self, from: data)
+            let host = URL(string: baseURL)?.host ?? "localhost"
             return decoded.models.map { model in
-                LLMModel.ollama(model.name)
+                LLMModel.ollama(model.name, host: host)
             }
         } catch {
             return []

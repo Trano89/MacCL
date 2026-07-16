@@ -2,21 +2,28 @@ import SwiftUI
 import AppKit
 
 /// Launch sheet for a new conversation — the GUI equivalent of typing the
-/// `claude` command in a terminal: pick the LLM, the working directory, the
-/// permission mode and the effort. These become the conversation's own
-/// parameters (persisted with it, restored when it's reopened).
+/// `claude` command in a terminal: pick the Ollama SERVER, the LLM, the
+/// working directory, the permission mode and the effort. These become the
+/// conversation's own parameters (persisted with it, restored when reopened).
+/// The server is asked HERE, every time: each conversation is bound to its own.
 struct NewConversationSheet: View {
     @ObservedObject var vm: ChatViewModel
     @EnvironmentObject var settings: AppSettings
     @Environment(\.dismiss) private var dismiss
 
+    @State private var serverURL = ""
+    @State private var discovered: [OllamaDiscovery.Server] = []
+    @State private var scanning = false
+    @State private var serverModels: [LLMModel] = []
+    @State private var loadingModels = false
     @State private var modelId = ""
     @State private var workingDirectory = ""
     @State private var permission: PermissionMode = .bypassPermissions
     @State private var effort: EffortLevel = .high
     @State private var convInstructions = ""
 
-    private var model: LLMModel? { vm.availableModels.first { $0.id == modelId } }
+    private var allModels: [LLMModel] { LLMModel.anthropicCatalog + serverModels }
+    private var model: LLMModel? { allModels.first { $0.id == modelId } }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,15 +36,21 @@ struct NewConversationSheet: View {
             Divider()
 
             Form {
+                serverSection
+
                 Section(L10n.t("launch_params")) {
                     Picker(L10n.t("model_llm"), selection: $modelId) {
-                        let groups = Dictionary(grouping: vm.availableModels, by: { $0.provider })
-                        ForEach([LLMModel.Provider.anthropic, .ollama], id: \.self) { provider in
-                            if let models = groups[provider], !models.isEmpty {
-                                Section(provider.label) {
-                                    ForEach(models) { m in
-                                        Text(m.name).tag(m.id)
-                                    }
+                        Section("Anthropic") {
+                            ForEach(LLMModel.anthropicCatalog) { m in
+                                Text(m.name).tag(m.id)
+                            }
+                        }
+                        if loadingModels {
+                            Text(L10n.t("loading_models")).tag("__loading__")
+                        } else if !serverModels.isEmpty {
+                            Section("Ollama · \(serverHostLabel)") {
+                                ForEach(serverModels) { m in
+                                    Text(m.name).tag(m.id)
                                 }
                             }
                         }
@@ -88,13 +101,82 @@ struct NewConversationSheet: View {
             }
             .padding(12)
         }
-        .frame(width: 580, height: 480)
+        .frame(width: 580, height: 560)
         .onAppear {
+            serverURL = settings.ollamaBaseURL     // last used, as a default
             modelId = settings.selectedModelId
             workingDirectory = settings.workingDirectory
             permission = settings.permissionMode
             effort = settings.effortLevel
             convInstructions = vm.conversationInstructions
+            Task { await scan() }
+            Task { await loadModels() }
+        }
+        .onChange(of: serverURL) { _, _ in
+            Task { await loadModels() }
+        }
+    }
+
+    /// Per-conversation server: discovered machines + manual entry.
+    private var serverSection: some View {
+        Section(L10n.t("conv_server")) {
+            HStack(spacing: 8) {
+                TextField("http://192.168.1.10:11434", text: $serverURL)
+                    .font(.system(.body, design: .monospaced))
+                Button {
+                    Task { await scan() }
+                } label: {
+                    if scanning {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label(L10n.t("scan"), systemImage: "antenna.radiowaves.left.and.right")
+                    }
+                }
+                .disabled(scanning)
+            }
+            ForEach(discovered) { server in
+                Button {
+                    serverURL = server.url
+                } label: {
+                    HStack(spacing: 9) {
+                        Image(systemName: serverURL == server.url
+                              ? "checkmark.circle.fill" : "server.rack")
+                            .foregroundStyle(serverURL == server.url ? Theme.accent : .secondary)
+                        Text(server.host)
+                        Text("\(server.modelCount) \(L10n.t("models_count"))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            if !loadingModels && serverModels.isEmpty {
+                Label(L10n.t("server_no_models_hint"), systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    private var serverHostLabel: String {
+        URL(string: serverURL)?.host ?? serverURL
+    }
+
+    private func scan() async {
+        scanning = true
+        discovered = await OllamaDiscovery.discover(port: 11434, configured: serverURL)
+        scanning = false
+    }
+
+    private func loadModels() async {
+        loadingModels = true
+        serverModels = await OllamaClient.listModels(baseURL: serverURL)
+        loadingModels = false
+        // Keep the selection valid for THIS server.
+        if !allModels.contains(where: { $0.id == modelId }) {
+            modelId = serverModels.first?.id ?? LLMModel.anthropicCatalog.first!.id
         }
     }
 
@@ -103,6 +185,7 @@ struct NewConversationSheet: View {
         var env = ""
         if m?.provider == .ollama {
             env = "ANTHROPIC_BASE_URL=\(settings.routerBaseURL) ANTHROPIC_MODEL=\(m?.modelArg ?? "?") "
+            env = "# pont → \(serverURL)\n" + env
         }
         var cmd = "claude -p --input-format stream-json --output-format stream-json --verbose"
         cmd += " --model \(m?.modelArg ?? "?")"
@@ -133,8 +216,11 @@ struct NewConversationSheet: View {
         settings.workingDirectory = workingDirectory
         settings.permissionMode = permission
         settings.effortLevel = effort
+        settings.ollamaBaseURL = serverURL          // seed for the next sheet
         vm.newConversation()
+        vm.conversationServerURL = serverURL        // this conversation's own server
         vm.conversationInstructions = convInstructions // after reset, applies to this conversation
+        Task { await vm.refreshModels() }
         dismiss()
     }
 }

@@ -54,10 +54,7 @@ struct ModelPickerSheet: View {
                                                      ? Theme.accent : .secondary)
                                 VStack(alignment: .leading, spacing: 1) {
                                     Text(model.name)
-                                    if let server = model.serverName {
-                                        Text(server)
-                                            .foregroundStyle(.secondary)
-                                    }
+                                    // Subtitle already carries the server host.
                                     if let sub = model.subtitle {
                                         Text(sub)
                                             .foregroundStyle(.secondary)
@@ -72,6 +69,103 @@ struct ModelPickerSheet: View {
                 }
             }
         }
+    }
+}
+
+/// Change the CURRENT conversation's Ollama server, mid-course. The claude
+/// session survives: it resends the full history each turn, so the next
+/// message replays the whole conversation on the new server.
+struct ServerPickerSheet: View {
+    @ObservedObject var vm: ChatViewModel
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var serverURL = ""
+    @State private var discovered: [OllamaDiscovery.Server] = []
+    @State private var scanning = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Label(L10n.t("conv_server"), systemImage: "server.rack")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    Task { await scan() }
+                } label: {
+                    if scanning {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label(L10n.t("scan"), systemImage: "antenna.radiowaves.left.and.right")
+                    }
+                }
+                .controlSize(.small)
+                .disabled(scanning)
+            }
+            .padding(12)
+            Divider()
+
+            List {
+                Section {
+                    TextField("http://192.168.1.10:11434", text: $serverURL)
+                        .font(.system(.body, design: .monospaced))
+                }
+                if !discovered.isEmpty {
+                    Section(L10n.t("discovered_servers")) {
+                        ForEach(discovered) { server in
+                            Button {
+                                serverURL = server.url
+                            } label: {
+                                HStack(spacing: 9) {
+                                    Image(systemName: serverURL == server.url
+                                          ? "checkmark.circle.fill" : "server.rack")
+                                        .foregroundStyle(serverURL == server.url ? Theme.accent : .secondary)
+                                    Text(server.host)
+                                    Text("\(server.modelCount) \(L10n.t("models_count"))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                Section {
+                    Text(L10n.t("server_change_note"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Divider()
+            HStack {
+                Spacer()
+                Button(L10n.t("cancel")) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button(L10n.t("apply")) {
+                    let url = serverURL
+                    Task { await vm.changeServer(to: url) }
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.accent)
+                .disabled(vm.isRunning || serverURL.trimmingCharacters(in: .whitespaces).isEmpty)
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(10)
+        }
+        .frame(width: 420, height: 380)
+        .onAppear {
+            serverURL = vm.conversationServerURL
+            Task { await scan() }
+        }
+    }
+
+    private func scan() async {
+        scanning = true
+        discovered = await OllamaDiscovery.discover(port: 11434, configured: vm.conversationServerURL)
+        scanning = false
     }
 }
 

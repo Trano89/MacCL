@@ -100,8 +100,6 @@ final class ChatViewModel: ObservableObject {
     private let lifecycleObserver = AppLifecycleObserver()
     /// Monitors router/session health and auto-heals on background return.
     private var healthMonitor: AppHealthMonitor!
-    /// Epoch of the current session's server URL — used to detect mid-conversation disconnects.
-    private var serverEpochURL: String = ""
     /// Opaque token invalidated when the session is replaced.
     /// Stale callbacks check this on every invocation so that events from an old
     /// session (dequeued late via DispatchQueue.main.async) cannot mutate another
@@ -111,8 +109,21 @@ final class ChatViewModel: ObservableObject {
     /// Token to remove the app-quit notification observer — prevents zombie callbacks.
     private var quitObserver: NSObjectProtocol?
 
+    /// The Ollama server THIS conversation is bound to. Chosen when the
+    /// conversation is created, persisted with it, changeable mid-conversation.
+    /// Never rewritten behind the user's back.
+    @Published var conversationServerURL: String
+    /// True while the conversation's server doesn't answer: sending is blocked
+    /// (with a visible banner) until the server comes back — no localhost fallback.
+    @Published var serverUnavailable = false
+    /// Re-probes the bound server while it's unavailable, to unblock automatically.
+    private var serverWatchTask: Task<Void, Never>?
+
     init(settings: AppSettings) {
         self.settings = settings
+        // Seed new conversations with the last server used (pure default — the
+        // new-conversation sheet asks explicitly every time).
+        conversationServerURL = settings.ollamaBaseURL
         statusLine = L10n.t("ready")
         // Initialize monitors after wire() (which captures `self`) and before start().
         reachabilityMonitor = OllamaDiscovery.ReachabilityMonitor(delegate: self)
@@ -123,12 +134,9 @@ final class ChatViewModel: ObservableObject {
         // Wire up lifecycle observer (foreground/background).
         lifecycleObserver.delegate = self
         healthMonitor = AppHealthMonitor(delegate: self)
-        // Re-list models when the Ollama server changes (e.g. picked from a scan).
-        settings.$ollamaBaseURL
-            .dropFirst()
-            .debounce(for: .seconds(0.15), scheduler: RunLoop.main)
-            .sink { [weak self] _ in Task { await self?.refreshModels() } }
-            .store(in: &cancellables)
+        // NOTE: the app used to observe a global server setting and re-list
+        // models on change; the server now belongs to each conversation, so
+        // changes only ever go through changeServer(to:).
         // Terminate the claude child on app quit so it doesn't outlive the app.
         // Store the observer token to remove it when this VM is deallocated or replaced.
         quitObserver = NotificationCenter.default.addObserver(
@@ -148,15 +156,25 @@ final class ChatViewModel: ObservableObject {
     }
 
     var selectedModel: LLMModel {
-        availableModels.first { $0.id == settings.selectedModelId }
-            ?? LLMModel.anthropicCatalog.first
-                ?? LLMModel(id: "anthropic:opus", provider: .anthropic, name: "Claude Opus 4.8", modelArg: "opus", subtitle: nil)
+        if let m = availableModels.first(where: { $0.id == settings.selectedModelId }) { return m }
+        // An Ollama model whose server is momentarily down isn't in the list —
+        // keep showing IT (the conversation waits for its server; it must not
+        // silently morph into an Anthropic one).
+        if settings.selectedModelId.hasPrefix("ollama:") {
+            let name = String(settings.selectedModelId.dropFirst("ollama:".count))
+            return LLMModel.ollama(name, host: serverHost)
+        }
+        return LLMModel.anthropicCatalog.first
+            ?? LLMModel(id: "anthropic:opus", provider: .anthropic, name: "Claude Opus 4.8", modelArg: "opus", subtitle: nil)
     }
 
     var canSend: Bool {
         let hasText = !composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return (hasText || !attachments.isEmpty) && !isRunning
+        return (hasText || !attachments.isEmpty) && !isRunning && !isBlockedByServer
     }
+
+    /// A conversation whose server is down cannot continue — until it's back.
+    var isBlockedByServer: Bool { usesBridge && serverUnavailable }
 
     // MARK: - Actions
 
@@ -278,6 +296,10 @@ final class ChatViewModel: ObservableObject {
         currentGroup = nil
         agentMonitor.clearAll()
         stopTurnTimer()
+        // The new-conversation sheet sets the server right after this call;
+        // until then, clear any stale block from the previous conversation.
+        serverUnavailable = false
+        serverWatchTask?.cancel()
     }
 
     /// Load a conversation from history. Continuing it resumes the claude session.
@@ -303,15 +325,26 @@ final class ChatViewModel: ObservableObject {
         isRunning = false
         statusLine = L10n.t("conversation_loaded")
         // Restore the conversation's own parameters so a follow-up runs with the
-        // exact same launch configuration (model, cwd, permissions, effort).
+        // exact same launch configuration (server, model, cwd, permissions, effort).
         settings.workingDirectory = convo.workingDirectory
-        if availableModels.contains(where: { $0.id == convo.modelId }) {
-            settings.selectedModelId = convo.modelId
-        }
-        if let pm = convo.permissionMode { settings.permissionModeRaw = pm }
-        if let ef = convo.effort { settings.effortLevelRaw = ef }
+        // Its bound server first (older files: fall back to the last-used one) —
+        // the model list depends on it.
+        conversationServerURL = convo.serverURL ?? settings.ollamaBaseURL
+        serverUnavailable = false
+        serverWatchTask?.cancel()
         conversationInstructions = convo.instructions ?? ""
         currentGroup = convo.group
+        if let pm = convo.permissionMode { settings.permissionModeRaw = pm }
+        if let ef = convo.effort { settings.effortLevelRaw = ef }
+        // Restore the conversation's model FIRST; refreshModels() then keeps it
+        // even when its server is down (the conversation just waits).
+        settings.selectedModelId = convo.modelId
+        Task { [weak self] in
+            guard let self else { return }
+            await self.refreshModels()
+            // Is the bound server up? If not, the conversation waits for it.
+            await self.probeConversationServer()
+        }
     }
 
     /// Assign a conversation to a group (nil clears it).
@@ -338,6 +371,7 @@ final class ChatViewModel: ObservableObject {
             workingDirectory: settings.workingDirectory,
             permissionMode: settings.permissionModeRaw,
             effort: settings.effortLevelRaw,
+            serverURL: conversationServerURL,
             instructions: conversationInstructions.isEmpty ? nil : conversationInstructions,
             group: currentGroup,
             items: items,
@@ -394,23 +428,20 @@ final class ChatViewModel: ObservableObject {
     }
 
     func refreshModels() async {
-        var models = LLMModel.anthropicCatalog
-        var ollama = await OllamaClient.listModels(baseURL: settings.ollamaBaseURL)
-        // Failover: if the configured server is unreachable but a local Ollama
-        // runs, switch to it rather than silently listing no local models.
-        if ollama.isEmpty, settings.ollamaBaseURL != "http://localhost:11434" {
-            let local = await OllamaClient.listModels(baseURL: "http://localhost:11434")
-            if !local.isEmpty {
-                settings.ollamaBaseURL = "http://localhost:11434"
-                ollama = local
-                statusLine = L10n.t("ollama_fallback")
-            }
-        }
-        models += ollama
+        // Models come from the CONVERSATION's server, and from it only. If it
+        // doesn't answer, the list is simply empty — never a silent switch to
+        // another machine.
+        let ollama = await OllamaClient.listModels(baseURL: conversationServerURL)
+        let models = LLMModel.anthropicCatalog + ollama
         availableModels = models
-        // Keep selection valid.
+        // Keep selection valid — but never discard an Ollama selection just
+        // because its server is momentarily down: the conversation is blocked
+        // meanwhile and the model comes back with the server.
         if !models.contains(where: { $0.id == settings.selectedModelId }) {
-            settings.selectedModelId = models.first?.id ?? "anthropic:opus"
+            let waitingForServer = settings.selectedModelId.hasPrefix("ollama:") && ollama.isEmpty
+            if !waitingForServer {
+                settings.selectedModelId = models.first?.id ?? "anthropic:opus"
+            }
         }
     }
 
@@ -426,14 +457,31 @@ final class ChatViewModel: ObservableObject {
         claudeAvailable = true
 
         let model = selectedModel
+
+        // The conversation is bound to its server: check it answers BEFORE
+        // spending a turn. If it's down, block visibly and watch for its return.
+        if model.provider != .anthropic {
+            guard await OllamaClient.isReachable(baseURL: conversationServerURL) else {
+                serverUnavailable = true
+                startServerWatch()
+                appendNotice(.error, L10n.t("server_unreachable_blocked", serverHost))
+                statusLine = L10n.t("server_waiting", serverHost)
+                isRunning = false
+                return
+            }
+            serverUnavailable = false
+        }
+
         isRunning = true
         sawResultSinceLastTurn = false
         statusLine = L10n.t("sending_to", model.name)
         startWatchdog(for: model)
         startTurnTimer()
 
-        // For local models, make sure the router is up.
-        if let err = await ModelRouter.shared.prepare(for: model, settings: settings) {
+        // Point the bridge at THIS conversation's server (restarts it if the
+        // target changed — same instructions whatever the address).
+        if let err = await ModelRouter.shared.prepare(for: model, settings: settings,
+                                                      serverURL: conversationServerURL) {
             appendNotice(.error, err)
             isRunning = false
             statusLine = L10n.t("router_error")
@@ -450,7 +498,8 @@ final class ChatViewModel: ObservableObject {
                 healthPath: ModelRouter.shared.activeBridgeHealthPath(settings: settings))
         }
 
-        let extraEnv = ModelRouter.shared.environment(for: model, settings: settings)
+        let extraEnv = ModelRouter.shared.environment(for: model, settings: settings,
+                                                      serverURL: conversationServerURL)
 
         if session.isRunning {
             session.send(content: blocks)
@@ -760,28 +809,10 @@ final class ChatViewModel: ObservableObject {
 extension ChatViewModel: OllamaDiscovery.ServerDiscoveryDelegate {
     @MainActor
     func didDiscoverServer(_ server: OllamaDiscovery.Server) {
-        // Add to standby servers if not already present.
+        // Remember it so the server pickers can offer it. NEVER auto-switch:
+        // a conversation stays on the server it was created with.
         if !settings.standbyServers.contains(where: { $0.url == server.url }) {
             settings.addStandbyServer(server.standbyServer)
-        }
-        // If the currently selected URL is unreachable, try auto-switching to this one.
-        Task { [weak self] in await self?.tryAutoSwitchTo(server) }
-    }
-
-    /// Check if `server` works and auto-switch if the current server is dead.
-    private func tryAutoSwitchTo(_ server: OllamaDiscovery.Server) async {
-        let serverReachable = await OllamaClient.isReachable(baseURL: settings.ollamaBaseURL)
-        guard !serverReachable else { return }
-        guard let url = URL(string: server.url), let host = url.host, !host.isEmpty else { return }
-        let localHosts: Set<String> = ["localhost", "127.0.0.1"]
-        guard localHosts.contains(host) || server.url.hasPrefix("http://") else { return }
-        if await OllamaClient.isReachable(baseURL: server.url) {
-            settings.ollamaBaseURL = server.url
-            await refreshModels()
-            let wasLocalOnly = (settings.ollamaBaseURL == "http://localhost:11434")
-            if localHosts.contains(host) && !wasLocalOnly {
-                statusLine = L10n.t("ollama_fallback")
-            }
         }
     }
 }
@@ -790,9 +821,11 @@ extension ChatViewModel: OllamaDiscovery.ReachabilityDelegate {
     @MainActor
     func didChangeNetworkReachable(_ reachable: Bool) {
         if reachable {
-            // Network back — trigger immediate scan and model refresh.
-            Task { await self.periodicScanner?.runScan(configuredServer: settings.ollamaBaseURL) }
+            // Network back — rescan, refresh, and re-probe the bound server
+            // (may lift the "server unavailable" block). No server switch.
+            Task { await self.periodicScanner?.runScan(configuredServer: self.conversationServerURL) }
             Task { await self.refreshModels() }
+            Task { await self.probeConversationServer() }
         }
     }
 }
@@ -819,19 +852,49 @@ extension ChatViewModel: HealthDelegate {
         statusLine = L10n.t("router_restarting")
     }
 
+    /// Only Ollama models route through a local bridge; Anthropic ones don't.
+    var usesBridge: Bool {
+        let p = selectedModel.provider
+        return p == .ollama || p == .ollamaNetwork
+    }
+
+    /// The bridge died while a turn was running: the in-flight request is gone.
+    /// Close the turn with a clear error so the user can just resend.
+    func turnBrokenByBridgeDeath() {
+        guard isRunning else { return }
+        watchdog?.cancel()
+        waitingHint = nil
+        isRunning = false
+        stopTurnTimer()
+        appendNotice(.error, L10n.t("turn_lost_bridge_died"))
+        statusLine = L10n.t("router_restarting")
+        AppLog.write("session", "turn aborted: bridge process died mid-turn")
+    }
+
+    /// Stop the dead bridge and start a fresh one on the current model.
+    func restartBridge() async -> String? {
+        guard usesBridge else { return nil }
+        let model = selectedModel
+        ModelRouter.shared.shutdown()
+        if let err = await ModelRouter.shared.prepare(for: model, settings: settings,
+                                                      serverURL: conversationServerURL) { return err }
+        ModelRouter.shared.startKeepAlive(port: ModelRouter.shared.activeBridgePort(settings: settings),
+                                          healthPath: ModelRouter.shared.activeBridgeHealthPath(settings: settings))
+        return nil
+    }
+
     /// A turn is in flight — the health monitor must not restart the bridge now.
     var isTurnInFlight: Bool { isRunning }
 
     func routerDidRestart() {
-        // If a session is running, check it's still healthy; if not, signal to the user.
+        // The bridge really was restarted by restartBridge() before we get here,
+        // so this only confirms the outcome to the user.
         Task {
             let isHealthy = await ModelRouter.shared.bridgeHealthy(settings: settings)
             await MainActor.run {
-                if isHealthy {
-                    statusLine = L10n.t("router_recovered")
-                } else {
-                    statusLine = L10n.t("router_recovery_failed")
-                    Task { await self.tryAutoSwitchTo(OllamaDiscovery.Server(url: "http://localhost:11434", host: "localhost", modelCount: 0)) }
+                statusLine = L10n.t(isHealthy ? "router_recovered" : "router_recovery_failed")
+                if !isHealthy {
+                    AppLog.write("health", "bridge still unhealthy after restart")
                 }
             }
         }
@@ -868,7 +931,8 @@ extension ChatViewModel {
             // Stop dead router, then re-prepare with same model.
             ModelRouter.shared.shutdown()
 
-            let prepareErr = await ModelRouter.shared.prepare(for: currentModel, settings: settings)
+            let prepareErr = await ModelRouter.shared.prepare(for: currentModel, settings: settings,
+                                                              serverURL: conversationServerURL)
             if let err = prepareErr {
                 appendNotice(.error, L10n.t("router_error"))
                 statusLine = err
@@ -892,34 +956,82 @@ extension ChatViewModel {
     }
 }
 
-// MARK: - Mid-conversation server health check
+// MARK: - Per-conversation server: probe, wait for return, change
 
 extension ChatViewModel {
-    /// Check if the current Ollama server is still reachable; auto-fallback to localhost if not.
-    private func checkServerHealth() async -> Bool {
-        let isOllamaModel = selectedModel.provider == .ollama || selectedModel.provider == .ollamaNetwork
-        guard isOllamaModel else { return true }
+    /// Host part of the bound server, for display.
+    var serverHost: String {
+        URL(string: conversationServerURL)?.host ?? conversationServerURL
+    }
 
-        // If URL changed since session started, update epoch and re-check.
-        if serverEpochURL != settings.ollamaBaseURL {
-            serverEpochURL = settings.ollamaBaseURL
-            return await OllamaClient.isReachable(baseURL: settings.ollamaBaseURL)
+    /// Is the bound server answering? Updates the block accordingly. No fallback:
+    /// if it's down, the conversation waits for THIS server, not another one.
+    func probeConversationServer() async {
+        guard usesBridge else { serverUnavailable = false; return }
+        let up = await OllamaClient.isReachable(baseURL: conversationServerURL)
+        if up {
+            if serverUnavailable {
+                serverUnavailable = false
+                statusLine = L10n.t("server_back", serverHost)
+                await refreshModels()
+            }
+            serverWatchTask?.cancel()
+        } else if !serverUnavailable {
+            serverUnavailable = true
+            statusLine = L10n.t("server_waiting", serverHost)
+            startServerWatch()
         }
+    }
 
-        // Current server alive? Nothing to do.
-        if await OllamaClient.isReachable(baseURL: settings.ollamaBaseURL) {
-            return true
+    /// While blocked, quietly re-probe the bound server so the conversation
+    /// unblocks by itself the moment the server reappears.
+    func startServerWatch() {
+        serverWatchTask?.cancel()
+        serverWatchTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                guard let self, self.serverUnavailable else { return }
+                if await OllamaClient.isReachable(baseURL: self.conversationServerURL) {
+                    await MainActor.run {
+                        self.serverUnavailable = false
+                        self.statusLine = L10n.t("server_back", self.serverHost)
+                    }
+                    await self.refreshModels()
+                    return
+                }
+            }
         }
+    }
 
-        // Current server gone — try localhost as fallback.
-        if await OllamaClient.isReachable(baseURL: "http://localhost:11434") {
-            settings.ollamaBaseURL = "http://localhost:11434"
-            statusLine = L10n.t("ollama_fallback")
-            return true
+    /// Switch this conversation to another server, mid-course. The claude
+    /// session keeps running: it resends the FULL history on every request, so
+    /// the new server receives the whole conversation on the next message.
+    func changeServer(to url: String) async {
+        guard !isRunning else {
+            statusLine = L10n.t("server_change_busy")
+            return
         }
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != conversationServerURL else { return }
+        conversationServerURL = trimmed
+        settings.ollamaBaseURL = trimmed        // seed for future conversations
+        serverUnavailable = false
+        serverWatchTask?.cancel()
+        // Retarget: prepare() will restart the bridge at next send since the
+        // target URL changed; shutting down now makes it immediate and frees
+        // the old connection.
+        ModelRouter.shared.shutdown()
+        await refreshModels()
+        await probeConversationServer()
+        if !serverUnavailable {
+            statusLine = L10n.t("server_changed", serverHost)
+            AppLog.write("session", "server changed to \(trimmed) — full history goes there next turn")
+        }
+        persistIfNeeded()
+    }
 
-        // No Ollama available — nothing we can do.
-        return false
+    private func persistIfNeeded() {
+        if currentConversationId != nil { persist() }
     }
 }
 

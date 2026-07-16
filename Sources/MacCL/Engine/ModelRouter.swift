@@ -11,19 +11,24 @@ final class ModelRouter {
     static let shared = ModelRouter()
 
     private let proxy = RouterProcess()
-    /// Ollama models we've loaded this session — unloaded when the app quits.
-    private var usedModels: Set<String> = []
+    /// Ollama models we've loaded this session, per server ("url|model") —
+    /// unloaded from their own server when the app quits.
+    private var usedModels: Set<UsedModel> = []
+    private struct UsedModel: Hashable { let serverURL: String; let model: String }
     /// Periodic pinger to keep the local proxy alive even in background / between turns.
     /// Pings every 15 s; this is what prevents the "app stopped working after switching apps" bug.
     private let pinger = KeepAlivePinger()
 
     /// Environment overrides for the child `claude` process.
-    func environment(for model: LLMModel, settings: AppSettings) -> [String: String] {
+    /// Identical for every Ollama server — localhost or network, an address is
+    /// just an address: `claude` always talks to the local bridge, and only the
+    /// bridge's target changes.
+    func environment(for model: LLMModel, settings: AppSettings, serverURL: String) -> [String: String] {
         switch model.provider {
         case .anthropic:
             return [:]
         case .ollama, .ollamaNetwork:
-            usedModels.insert(model.modelArg)
+            usedModels.insert(UsedModel(serverURL: serverURL, model: model.modelArg))
             // Always go through a local bridge: raw Ollama speaks /api/chat, not
             // the Anthropic Messages API that Claude Code sends.
             let baseUrl = settings.bridgeEngine == .litellm
@@ -41,27 +46,19 @@ final class ModelRouter {
         }
     }
 
-    /// Ensure the router is running for Ollama providers (both local and remote).
-    /// For `.ollamaNetwork` the URL is validated but not persisted — that stays
-    /// on the standby-server list.  Returns an error string if it could not be started.
-    func prepare(for model: LLMModel, settings: AppSettings) async -> String? {
+    /// Ensure the bridge is running and pointed at `serverURL` — the
+    /// conversation's own server. One code path for every address.
+    /// Returns an error string if it could not be started.
+    func prepare(for model: LLMModel, settings: AppSettings, serverURL: String) async -> String? {
         guard model.provider == .ollama || model.provider == .ollamaNetwork else { return nil }
 
         // Validate port range and check no essential service is already bound before committing to ANTHROPIC_BASE_URL.
         guard settings.routerPort >= 1024 && settings.routerPort <= 65535 else {
             return L10n.t("invalid_port")
         }
-
-        if model.provider == .ollamaNetwork {
-            // Security: validate the remote URL via shared validator.
-            guard URLValidator.validate(settings.ollamaBaseURL) != nil else {
-                return L10n.t("invalid_ollama_url")
-            }
-            // Warn about sending API traffic to a remote server.
-            if let parsed = URL(string: settings.ollamaBaseURL), parsed.scheme != "https" {
-                print("[ModelRouter] WARNING: ANTHROPIC_BASE_URL for \(model.name) uses \(parsed.scheme ?? "unknown")://"
-                      + " — model output may be transmitted in plaintext.")
-            }
+        // Same validation for every server, localhost included.
+        guard URLValidator.validate(serverURL) != nil else {
+            return L10n.t("invalid_ollama_url")
         }
 
         // LiteLLM bridge: hand off to the Python proxy instead of the Node one.
@@ -71,12 +68,12 @@ final class ModelRouter {
             }
             proxy.stop() // only one bridge at a time
             return await litellm.ensureRunning(port: settings.litellmPort,
-                                               ollamaBaseURL: settings.ollamaBaseURL)
+                                               ollamaBaseURL: serverURL)
         }
 
         litellm.stop()
         let err = await proxy.ensureRunning(port: settings.routerPort,
-                                            ollamaBaseURL: settings.ollamaBaseURL,
+                                            ollamaBaseURL: serverURL,
                                             numCtx: settings.ollamaNumCtx,
                                             think: settings.showReasoning,
                                             maxPredict: settings.ollamaMaxPredict)
@@ -94,6 +91,13 @@ final class ModelRouter {
     /// Liveness path of the active bridge (LiteLLM's `/health` is expensive).
     func activeBridgeHealthPath(settings: AppSettings) -> String {
         settings.bridgeEngine == .litellm ? "/health/liveliness" : "/health"
+    }
+
+    /// Is the active bridge's *process* alive? Unlike an HTTP probe this can't be
+    /// confused by a bridge that is merely busy, so it's the one signal safe to
+    /// trust mid-turn.
+    func bridgeProcessAlive(settings: AppSettings) -> Bool {
+        settings.bridgeEngine == .litellm ? litellm.isRunning : proxy.isRunning
     }
 
     /// Is the active bridge answering? Use this — never `OllamaClient.isReachable`,
@@ -132,13 +136,13 @@ final class ModelRouter {
         litellm.stop()
     }
 
-    /// Called on app quit: unload the models we loaded, then stop the router.
-    /// Models stay resident (keep_alive:-1) while the app runs; this is the only
-    /// place they're released.
-    func cleanupOnQuit(baseURL: String) {
+    /// Called on app quit: unload the models we loaded — each from its own
+    /// server — then stop the router. Models stay resident (keep_alive:-1)
+    /// while the app runs; this is the only place they're released.
+    func cleanupOnQuit() {
         pinger.stop()
-        for model in usedModels {
-            unloadSync(model: model, baseURL: baseURL)
+        for used in usedModels {
+            unloadSync(model: used.model, baseURL: used.serverURL)
         }
         proxy.stop()
         litellm.stop()

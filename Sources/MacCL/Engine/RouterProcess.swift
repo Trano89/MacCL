@@ -9,6 +9,10 @@ final class RouterProcess {
     private var currentCtx: Int?
     private var currentThink: Bool?
     private var currentMaxPredict: Int?
+    /// Ollama URL the running bridge points at. MUST be part of the
+    /// "already running?" comparison: without it, changing servers kept the old
+    /// bridge alive and every request silently went to the previous machine.
+    private var currentTarget: String?
 
     var isRunning: Bool { process?.isRunning ?? false }
 
@@ -20,9 +24,11 @@ final class RouterProcess {
             return L10n.t("invalid_ollama_url")
         }
 
-        // Already running with the same config and healthy?
+        // Already running with the same config — including the same target
+        // server — and healthy?
         if isRunning, currentPort == port, currentCtx == numCtx, currentThink == think,
-           currentMaxPredict == maxPredict, await isHealthy(port: port) {
+           currentMaxPredict == maxPredict, currentTarget == ollamaBaseURL,
+           await isHealthy(port: port) {
             return nil
         }
         stop()
@@ -57,6 +63,12 @@ final class RouterProcess {
             guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
             AppLog.write("router", text)
         }
+        // Without this, a router that dies leaves no trace at all: the health
+        // monitor just reports "unhealthy" forever with no cause on record.
+        proc.terminationHandler = { p in
+            let how = p.terminationReason == .uncaughtSignal ? "signal" : "exit"
+            AppLog.write("router", "router process ended: \(how) code=\(p.terminationStatus)")
+        }
 
         do {
             try proc.run()
@@ -68,6 +80,7 @@ final class RouterProcess {
         self.currentCtx = numCtx
         self.currentThink = think
         self.currentMaxPredict = maxPredict
+        self.currentTarget = ollamaBaseURL
 
         // Wait for the router to accept connections.
         for _ in 0..<20 {
@@ -84,6 +97,7 @@ final class RouterProcess {
         currentCtx = nil
         currentThink = nil
         currentMaxPredict = nil
+        currentTarget = nil
     }
 
     private func isHealthy(port: Int) async -> Bool {

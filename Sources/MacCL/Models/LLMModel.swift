@@ -7,11 +7,12 @@ struct LLMModel: Identifiable, Hashable {
         case ollama
         case ollamaNetwork
 
+        // .ollamaNetwork is kept only so old persisted ids still decode; the app
+        // no longer produces it — a server is just an address, local or not.
         var label: String {
             switch self {
             case .anthropic: return "Anthropic"
-            case .ollama: return "Ollama · local"
-            case .ollamaNetwork: return "Ollama · réseau"
+            case .ollama, .ollamaNetwork: return "Ollama"
             }
         }
     }
@@ -52,12 +53,14 @@ struct LLMModel: Identifiable, Hashable {
     }
 
     /// Build an Ollama entry from a model name reported by `/api/tags`.
-    static func ollama(_ name: String, capabilities: [String] = []) -> LLMModel {
-        var subtitle = "local"
+    /// `host` is the server it lives on — shown as the subtitle so the user
+    /// always sees which machine a model comes from.
+    static func ollama(_ name: String, host: String = "localhost", capabilities: [String] = []) -> LLMModel {
+        var subtitle = host
         if capabilities.contains("tools") { subtitle += " · outils" }
         if capabilities.contains("vision") { subtitle += " · vision" }
         return LLMModel(id: "ollama:\(name)", provider: .ollama, name: name,
-                        modelArg: name, subtitle: subtitle)
+                        modelArg: name, serverName: host, subtitle: subtitle)
     }
 }
 
