@@ -82,16 +82,35 @@ struct ServerPickerSheet: View {
     @State private var serverURL = ""
     @State private var discovered: [OllamaDiscovery.Server] = []
     @State private var scanning = false
+    /// Model management lives INSIDE this sheet as a mode — nested sheets have
+    /// bitten this app before.
+    @State private var managingModels = false
 
     /// What the typed address resolves to — `192.168.1.20` → `http://192.168.1.20:11434`.
     private var resolvedServerURL: String? { URLValidator.sanitizeAndValidate(serverURL) }
 
     var body: some View {
+        if managingModels {
+            ModelManagerView(serverURL: resolvedServerURL ?? vm.conversationServerURL) {
+                managingModels = false
+            }
+        } else {
+            pickerBody
+        }
+    }
+
+    private var pickerBody: some View {
         VStack(spacing: 0) {
             HStack {
                 Label(L10n.t("conv_server"), systemImage: "server.rack")
                     .font(.headline)
                 Spacer()
+                Button {
+                    managingModels = true
+                } label: {
+                    Label(L10n.t("manage_models"), systemImage: "wrench.and.screwdriver")
+                }
+                .controlSize(.small)
                 Button {
                     Task { await scan() }
                 } label: {

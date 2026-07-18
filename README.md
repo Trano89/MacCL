@@ -33,11 +33,14 @@ One more thing worth knowing: **each conversation is tied to the server you pick
 - Persistent conversations with resume, grouping, and running cost
 - Any model, per conversation: Anthropic (Opus, Sonnet, Haiku, Fable) or Ollama — with automatic discovery of servers on your network
 - Live view of the model's reasoning; effort level adjustable mid-conversation
+- Live token gauge per conversation, with one-click context compaction when it grows too big
 - Attachments: images (for vision models), text files, anything else by reference
 - A library of Markdown instruction files injected into the system prompt
 - Models stay loaded on the server between turns — no waiting for reloads
 - Light / dark / automatic theme, 12 accent colors
 - Interface in 5 languages (EN, FR, DE, PT, ES)
+- Manage the models of any Ollama server from inside the app — `pull`, `rm`, `cp`, `create` — even on a remote machine
+- Built-in update check against this repository's releases (Settings → About)
 
 ## Installation
 
@@ -66,6 +69,8 @@ OLLAMA_HOST=0.0.0.0 ollama serve
 ```
 
 Then in MacCL, hit **Scan** to sweep your network — or just type the machine's IP address (`192.168.1.20` is enough; the rest is filled in for you).
+
+**Models on the server** — click the server chip → *Manage models*: see what's installed (with sizes), delete with one click, or type terminal-style commands — `pull qwen3:14b`, `rm llama3:8b`, `cp a b`, `create fast from qwen3:8b num_ctx 8192`. Works the same on a remote machine — it's all Ollama's HTTP API.
 
 **Coding instructions** — sidebar → *Manage instructions*: Markdown files you edit inside the app, ticked to be injected into the system prompt. A conversation can also get its own instructions when you create it.
 

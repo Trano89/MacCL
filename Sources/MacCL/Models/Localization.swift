@@ -81,6 +81,16 @@ enum L10n {
         "version": ("Version", "Version", "Version", "Versão", "Versión"),
 
         // Appearance
+        // Model manager
+        "manage_models": ("Gérer les modèles", "Manage models", "Modelle verwalten", "Gerir modelos", "Gestionar modelos"),
+        "installed_models": ("Modèles installés", "Installed models", "Installierte Modelle", "Modelos instalados", "Modelos instalados"),
+        "no_models": ("Aucun modèle sur ce serveur.", "No models on this server.", "Keine Modelle auf diesem Server.", "Nenhum modelo neste servidor.", "No hay modelos en este servidor."),
+        "cmd_output": ("Sortie", "Output", "Ausgabe", "Saída", "Salida"),
+        "cmd_placeholder": ("pull qwen3:14b", "pull qwen3:14b", "pull qwen3:14b", "pull qwen3:14b", "pull qwen3:14b"),
+        "cmd_hint": ("Commandes : pull <modèle> · rm <modèle> · cp <src> <dest> · create <nom> from <base> num_ctx 32768", "Commands: pull <model> · rm <model> · cp <src> <dst> · create <name> from <base> num_ctx 32768", "Befehle: pull <Modell> · rm <Modell> · cp <Quelle> <Ziel> · create <Name> from <Basis> num_ctx 32768", "Comandos: pull <modelo> · rm <modelo> · cp <orig> <dest> · create <nome> from <base> num_ctx 32768", "Comandos: pull <modelo> · rm <modelo> · cp <orig> <dest> · create <nombre> from <base> num_ctx 32768"),
+        "cmd_unknown": ("Commande inconnue — voir les exemples sous le champ.", "Unknown command — see the examples below the field.", "Unbekannter Befehl — siehe Beispiele unter dem Feld.", "Comando desconhecido — veja os exemplos sob o campo.", "Comando desconocido — mira los ejemplos bajo el campo."),
+        "execute": ("Exécuter", "Run", "Ausführen", "Executar", "Ejecutar"),
+        "back": ("Retour", "Back", "Zurück", "Voltar", "Atrás"),
         // Updates
         "updates": ("Mises à jour", "Updates", "Updates", "Atualizações", "Actualizaciones"),
         "update_check": ("Vérifier les mises à jour", "Check for updates", "Nach Updates suchen", "Procurar atualizações", "Buscar actualizaciones"),
