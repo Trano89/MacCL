@@ -16,7 +16,8 @@ enum Theme {
     static var hairline: Color { Color.primary.opacity(0.09) }
 
     static let corner: CGFloat = 14
-    static let contentMaxWidth: CGFloat = 740
+    /// Width of the reading column (transcript, reasoning, composer).
+    static let contentMaxWidth: CGFloat = 860
 }
 
 extension View {

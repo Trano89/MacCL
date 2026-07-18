@@ -65,9 +65,12 @@ struct AnthropicMessage: Decodable {
     let model: String?
     let content: [ContentBlock]?
     let stopReason: String?
+    /// Per-API-call token usage — present on every assistant event, which makes
+    /// it the live source for the context gauge (results only close the turn).
+    let usage: JSONValue?
 
     enum CodingKeys: String, CodingKey {
-        case role, model, content
+        case role, model, content, usage
         case stopReason = "stop_reason"
     }
 
@@ -76,6 +79,7 @@ struct AnthropicMessage: Decodable {
         role = try? c.decode(String.self, forKey: .role)
         model = try? c.decode(String.self, forKey: .model)
         stopReason = try? c.decode(String.self, forKey: .stopReason)
+        usage = try? c.decode(JSONValue.self, forKey: .usage)
         // `content` may be a plain string (user shorthand) or an array of blocks.
         if let blocks = try? c.decode([ContentBlock].self, forKey: .content) {
             content = blocks

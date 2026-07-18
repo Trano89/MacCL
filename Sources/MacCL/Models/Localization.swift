@@ -81,6 +81,15 @@ enum L10n {
         "version": ("Version", "Version", "Version", "Versão", "Versión"),
 
         // Appearance
+        // Updates
+        "updates": ("Mises à jour", "Updates", "Updates", "Atualizações", "Actualizaciones"),
+        "update_check": ("Vérifier les mises à jour", "Check for updates", "Nach Updates suchen", "Procurar atualizações", "Buscar actualizaciones"),
+        "update_checking": ("Vérification…", "Checking…", "Suche läuft…", "A verificar…", "Comprobando…"),
+        "update_available": ("Version %@ disponible sur GitHub.", "Version %@ is available on GitHub.", "Version %@ ist auf GitHub verfügbar.", "A versão %@ está disponível no GitHub.", "La versión %@ está disponible en GitHub."),
+        "update_uptodate": ("Vous avez la dernière version.", "You're on the latest version.", "Sie haben die neueste Version.", "Tem a versão mais recente.", "Tienes la última versión."),
+        "update_download": ("Télécharger", "Download", "Laden", "Transferir", "Descargar"),
+        "update_error": ("Impossible de vérifier les mises à jour.", "Couldn't check for updates.", "Updates konnten nicht geprüft werden.", "Não foi possível verificar atualizações.", "No se pudieron comprobar actualizaciones."),
+        "update_repo_unreachable": ("Dépôt GitHub inaccessible (privé ou hors ligne).", "GitHub repository unreachable (private or offline).", "GitHub-Repository nicht erreichbar (privat oder offline).", "Repositório GitHub inacessível (privado ou offline).", "Repositorio de GitHub inaccesible (privado o sin conexión)."),
         // Token gauge
         "tokens_title": ("Consommation de tokens", "Token usage", "Token-Verbrauch", "Consumo de tokens", "Consumo de tokens"),
         "tokens_context": ("Contexte actuel", "Current context", "Aktueller Kontext", "Contexto atual", "Contexto actual"),

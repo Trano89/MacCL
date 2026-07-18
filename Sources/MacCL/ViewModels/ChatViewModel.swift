@@ -594,6 +594,16 @@ final class ChatViewModel: ObservableObject {
                 }
             }
         case "assistant":
+            // Live context gauge: every assistant event carries this API call's
+            // usage (verified). Latest wins — independent of the result plumbing,
+            // so the gauge moves even mid-turn during long tool loops.
+            if let u = env.message?.usage {
+                let footprint = (u["input_tokens"]?.asInt ?? 0)
+                    + (u["cache_read_input_tokens"]?.asInt ?? 0)
+                    + (u["cache_creation_input_tokens"]?.asInt ?? 0)
+                    + (u["output_tokens"]?.asInt ?? 0)
+                if footprint > 0 { contextTokens = footprint }
+            }
             for block in env.message?.content ?? [] {
                 switch block {
                 case .text(let t) where !t.isEmpty:
@@ -638,11 +648,13 @@ final class ChatViewModel: ObservableObject {
             sawResultSinceLastTurn = true
             // A result for an app-sent command (/effort …) is plumbing, not the
             // user's turn: acknowledge it quietly and leave the turn running.
-            if pendingInternalResults > 0 {
-                pendingInternalResults -= 1
-                if let text = env.result, !text.isEmpty {
-                    appendNotice(.info, text)
-                }
+            // Match on CONTENT, not just the counter: when /effort is sent while
+            // a turn is in flight, the REAL turn's result arrives first — a bare
+            // counter ate it (turn never closed, tokens never counted) and then
+            // promoted the /effort ack to "the result".
+            if let text = env.result, text.hasPrefix("Set effort level") {
+                if pendingInternalResults > 0 { pendingInternalResults -= 1 }
+                appendNotice(.info, text)
                 return
             }
             watchdog?.cancel()

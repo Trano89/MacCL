@@ -172,13 +172,43 @@ private struct AboutTab: View {
         "https://www.paypal.com/donate/?business=antonin.trottet%40icloud.com&currency_code=CHF")!
 
     @State private var showThanks = false
+    @State private var checkingUpdate = false
+    @State private var updateStatus: String?
+    @State private var updateAvailable = false
 
     var body: some View {
         Form {
             Section(L10n.t("about")) {
-                LabeledContent(L10n.t("version"), value: "MacCL 0.1.0")
+                LabeledContent(L10n.t("version"), value: "MacCL \(UpdateChecker.currentVersion)")
                 Text(L10n.t("about_text"))
                     .foregroundStyle(.secondary)
+            }
+
+            Section(L10n.t("updates")) {
+                HStack {
+                    if checkingUpdate {
+                        ProgressView().controlSize(.small)
+                        Text(L10n.t("update_checking")).foregroundStyle(.secondary)
+                    } else {
+                        Button(L10n.t("update_check")) { checkForUpdate() }
+                    }
+                    Spacer()
+                    if updateAvailable {
+                        Button {
+                            NSWorkspace.shared.open(UpdateChecker.releasesPage)
+                        } label: {
+                            Label(L10n.t("update_download"), systemImage: "arrow.down.circle")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Theme.accent)
+                    }
+                }
+                if let status = updateStatus {
+                    Text(status)
+                        .font(.caption)
+                        .foregroundStyle(updateAvailable ? Theme.accent : .secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Section(L10n.t("donate")) {
@@ -234,6 +264,24 @@ private struct AboutTab: View {
         .onOpenURL { url in
             if url.host == "www.paypal.com" || url.host == "paypal.me" || url.host == "www.paypal.me" {
                 showThanks = true
+            }
+        }
+    }
+
+    private func checkForUpdate() {
+        checkingUpdate = true
+        updateStatus = nil
+        updateAvailable = false
+        Task {
+            let (outcome, error) = await UpdateChecker.check()
+            checkingUpdate = false
+            if let outcome {
+                updateAvailable = outcome.isNewer
+                updateStatus = outcome.isNewer
+                    ? L10n.t("update_available", outcome.latestTag)
+                    : L10n.t("update_uptodate")
+            } else {
+                updateStatus = error
             }
         }
     }
