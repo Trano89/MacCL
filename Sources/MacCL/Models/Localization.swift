@@ -81,6 +81,16 @@ enum L10n {
         "version": ("Version", "Version", "Version", "Versão", "Versión"),
 
         // Appearance
+        // Agents panel
+        "agents_title": ("Agents", "Agents", "Agenten", "Agentes", "Agentes"),
+        "agents_empty": ("Aucun sous-agent dans cette conversation. Ils apparaissent quand Claude Code délègue une tâche (outil Task).", "No sub-agents in this conversation. They appear when Claude Code delegates a task (Task tool).", "Keine Sub-Agenten in dieser Unterhaltung. Sie erscheinen, wenn Claude Code eine Aufgabe delegiert (Task-Tool).", "Nenhum subagente nesta conversa. Aparecem quando o Claude Code delega uma tarefa (ferramenta Task).", "No hay subagentes en esta conversación. Aparecen cuando Claude Code delega una tarea (herramienta Task)."),
+        "agent_open": ("Voir l'agent", "View agent", "Agent anzeigen", "Ver agente", "Ver agente"),
+        "agent_instructions": ("Instructions", "Instructions", "Anweisungen", "Instruções", "Instrucciones"),
+        "agent_activity": ("Activité", "Activity", "Aktivität", "Atividade", "Actividad"),
+        "agent_result": ("Résultat", "Result", "Ergebnis", "Resultado", "Resultado"),
+        "agent_running": ("en cours", "running", "läuft", "em curso", "en curso"),
+        "agent_done": ("terminé", "done", "fertig", "concluído", "completado"),
+        "agent_failed": ("échoué", "failed", "fehlgeschlagen", "falhou", "fallido"),
         // Model manager
         "manage_models": ("Gérer les modèles", "Manage models", "Modelle verwalten", "Gerir modelos", "Gestionar modelos"),
         "installed_models": ("Modèles installés", "Installed models", "Installierte Modelle", "Modelos instalados", "Modelos instalados"),

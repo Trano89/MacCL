@@ -18,12 +18,21 @@ struct ChatView: View {
     ]
 
     var body: some View {
-        VStack(spacing: 0) {
-            transcript
-            reasoningPanel
-            Divider()
-            composer
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                transcript
+                reasoningPanel
+                Divider()
+                composer
+            }
+            if vm.showAgentsPanel {
+                Divider()
+                AgentsPanel(vm: vm)
+                    .frame(width: 320)
+                    .transition(.move(edge: .trailing))
+            }
         }
+        .animation(.easeOut(duration: 0.18), value: vm.showAgentsPanel)
     }
 
     @ViewBuilder private var reasoningPanel: some View {
@@ -49,7 +58,7 @@ struct ChatView: View {
                         // .equatable(): during streaming only the LAST row's item
                         // changes; every other visible row now short-circuits its
                         // body instead of re-laying out on each token.
-                        MessageRow(item: item)
+                        MessageRow(item: item, onOpenAgent: { vm.openAgent($0) })
                             .equatable()
                             .id(item.id)
                     }
