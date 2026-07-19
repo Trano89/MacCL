@@ -96,6 +96,63 @@ final class ChatViewModel: ObservableObject {
     /// Token to remove the app-quit notification observer — prevents zombie callbacks.
     private var quitObserver: NSObjectProtocol?
 
+    // MARK: Sub-agents (Task tool) — right-hand panel
+
+    /// A sub-agent as the panel shows it, derived from the Task tool items.
+    struct AgentInfo: Identifiable {
+        let id: String            // the Task tool_use id
+        let description: String
+        let type: String?
+        let prompt: String        // the agent's full instructions
+        let isRunning: Bool
+        let isError: Bool
+        let resultText: String?
+    }
+
+    @Published var showAgentsPanel = false
+    @Published var selectedAgentId: String?
+    /// Live feed per running agent (Task toolUseId → recent activity lines),
+    /// built from the sub-agent's own events (`parent_tool_use_id`).
+    @Published var agentActivity: [String: [String]] = [:]
+
+    /// Every sub-agent of this conversation, transcript order.
+    var agents: [AgentInfo] {
+        items.compactMap { item in
+            guard case .tool(let a) = item.kind, a.name == "Task" else { return nil }
+            return AgentInfo(id: a.toolUseId,
+                             description: a.input["description"]?.asString ?? a.headline,
+                             type: a.input["subagent_type"]?.asString,
+                             prompt: a.input["prompt"]?.asString ?? "",
+                             isRunning: a.isRunning,
+                             isError: a.isError,
+                             resultText: a.resultText)
+        }
+    }
+
+    /// Open the panel focused on one agent (the link in the transcript).
+    func openAgent(_ id: String) {
+        selectedAgentId = id
+        showAgentsPanel = true
+    }
+
+    /// Events emitted INSIDE a sub-agent: feed its activity log — never the main
+    /// transcript, which they used to pollute (interleaved text and tool cards
+    /// appearing to come from the main conversation).
+    private func handleAgentEvent(parent: String, _ env: StreamEnvelope) {
+        receivedContentThisTurn = true
+        waitingHint = nil
+        guard env.type == "assistant" else { return }
+        for block in env.message?.content ?? [] {
+            if case .toolUse(_, let name, let input) = block {
+                let headline = ToolActivity(toolUseId: "", name: name, input: input).headline
+                var lines = agentActivity[parent] ?? []
+                lines.append("⚒ \(name) — \(headline)")
+                if lines.count > 40 { lines.removeFirst(lines.count - 40) }
+                agentActivity[parent] = lines
+            }
+        }
+    }
+
     /// The Ollama server THIS conversation is bound to. Chosen when the
     /// conversation is created, persisted with it, changeable mid-conversation.
     /// Never rewritten behind the user's back.
@@ -284,6 +341,9 @@ final class ChatViewModel: ObservableObject {
         contextTokens = 0
         totalInputTokens = 0
         totalOutputTokens = 0
+        agentActivity = [:]
+        showAgentsPanel = false
+        selectedAgentId = nil
         currentReasoning = ""
         streamingTextIndex = nil
         streamedThinkingThisMessage = false
@@ -320,6 +380,9 @@ final class ChatViewModel: ObservableObject {
         contextTokens = convo.contextTokens ?? 0
         totalInputTokens = convo.totalInputTokens ?? 0
         totalOutputTokens = convo.totalOutputTokens ?? 0
+        agentActivity = [:]
+        showAgentsPanel = false
+        selectedAgentId = nil
         resumeOnNextStart = true // next message continues the persisted session
         currentReasoning = ""
         streamingTextIndex = nil
@@ -579,6 +642,12 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func handle(_ env: StreamEnvelope) {
+        // A sub-agent's internal events go to ITS activity feed, not the main
+        // transcript.
+        if let parent = env.parentToolUseId {
+            handleAgentEvent(parent: parent, env)
+            return
+        }
         if ["assistant", "user", "result", "stream_event"].contains(env.type) {
             receivedContentThisTurn = true
             waitingHint = nil
@@ -606,6 +675,10 @@ final class ChatViewModel: ObservableObject {
             }
             for block in env.message?.content ?? [] {
                 switch block {
+                // The /effort ack surfaces twice: as this assistant text AND as
+                // the command's result (which becomes the notice). One is enough.
+                case .text(let t) where t.hasPrefix("Set effort level"):
+                    break
                 case .text(let t) where !t.isEmpty:
                     // If this text streamed live, replace the in-progress item
                     // with the canonical version instead of duplicating it.
