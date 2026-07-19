@@ -20,8 +20,10 @@ if [[ ! -f "$BIN" ]]; then
   exit 1
 fi
 
-# Assemble the bundle in a staging area, then install it in one move — never
-# leave a half-written app in /Applications.
+# Assemble the bundle in a staging area first, so a failed build never touches
+# the installed app. The install itself is rm -rf + cp -R, not an atomic swap:
+# if it is interrupted mid-copy, /Applications/MacCL.app is left incomplete —
+# just re-run the script.
 STAGE="$(mktemp -d)/$APP_NAME.app"
 mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
 

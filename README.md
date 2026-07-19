@@ -24,7 +24,7 @@ Claude Code CLI (the agent + its tools)
    └──►  Ollama server      (your LLM — this Mac, or any machine nearby)
 ```
 
-Nothing is hidden: MacCL even shows the exact CLI command each conversation runs — paste it into a terminal and you get the same session. Honest by design.
+Nothing is hidden: every conversation shows the CLI command behind it — the model, the flags, the server it talks to — so you can always see what the app asked the agent to do. Honest by design.
 
 One more thing worth knowing: **each conversation is tied to the server you picked for it.** If that machine goes offline, the conversation waits and tells you — it never quietly switches your work to a different computer.
 
@@ -44,7 +44,7 @@ One more thing worth knowing: **each conversation is tied to the server you pick
 
 ## Installation
 
-**The easy way:** download the DMG from the [latest release](https://github.com/Trano89/MacCL/releases/latest), open it, and drag **MacCL** into **Applications**. On first launch, right-click → *Open* (the app is self-signed).
+**The easy way:** download the DMG from the [latest release](https://github.com/Trano89/MacCL/releases/latest), open it, and drag **MacCL** into **Applications**. On first launch macOS will block it (the app is self-signed): right-click → *Open* on macOS 14, or open it once then allow it from System Settings → Privacy & Security on macOS 15+.
 
 **From source** — you'll need macOS 14 or newer, Swift 6 (comes with Xcode), and the [Claude Code CLI](https://code.claude.com) installed and signed in (`claude` available in your terminal). For local models: [Ollama](https://ollama.com) 0.14 or newer, with at least one model pulled (`ollama pull qwen3-coder:30b`).
 

@@ -121,9 +121,9 @@ struct ChatView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.large)
-                .help("Joindre des fichiers")
+                .help(L10n.t("attach_help"))
 
-                TextField("Écrivez à Claude…", text: $vm.composer, axis: .vertical)
+                TextField(L10n.t("write_placeholder"), text: $vm.composer, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.body)
                     .lineLimit(1...10)
@@ -144,7 +144,7 @@ struct ChatView: View {
                             Image(systemName: "stop.fill").frame(width: 20, height: 20)
                         }
                         .tint(.secondary)
-                        .help("Interrompre")
+                        .help(L10n.t("interrupt_help"))
                     } else {
                         Button(action: vm.send) {
                             Image(systemName: "arrow.up").frame(width: 20, height: 20)
@@ -152,7 +152,7 @@ struct ChatView: View {
                         .tint(Theme.accent)
                         .disabled(!vm.canSend)
                         .keyboardShortcut(.return, modifiers: [])
-                        .help("Envoyer (Retour)")
+                        .help(L10n.t("send_help"))
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -183,7 +183,7 @@ struct ChatView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.large)
-        .help("Commandes Claude Code")
+        .help(L10n.t("commands_help"))
         .sheet(isPresented: $showSlashCommands) {
             SlashCommandsSheet(
                 commands: vm.slashCommands.isEmpty ? Self.fallbackSlashCommands : vm.slashCommands
@@ -312,7 +312,7 @@ struct ChatView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .help("Choisir le modèle (LLM)")
+        .help(L10n.t("model_help"))
         .sheet(isPresented: $showModelPicker) {
             ModelPickerSheet(vm: vm)
         }
@@ -329,7 +329,7 @@ struct ChatView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .help("Permissions — cliquer pour changer. \(settings.permissionMode.explanation)")
+        .help(L10n.t("perm_help") + " " + settings.permissionMode.explanation)
     }
 
     /// Click cycles the reasoning effort level.
@@ -346,7 +346,7 @@ struct ChatView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .help("Effort de raisonnement — cliquer pour changer. \(settings.effortLevel.explanation)")
+        .help(L10n.t("effort_help") + " " + settings.effortLevel.explanation)
     }
 
     private var folderButton: some View {
@@ -355,7 +355,7 @@ struct ChatView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .help("Dossier de travail : \(settings.workingDirectory)")
+        .help(L10n.t("folder_help") + " : " + settings.workingDirectory)
     }
 
     private var instructionsButton: some View {
@@ -367,7 +367,7 @@ struct ChatView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .help("Instructions .md injectées dans le prompt")
+        .help(L10n.t("instructions_help"))
     }
 
     private var folderDisplayName: String {
@@ -407,7 +407,7 @@ private struct EmptyState: View {
             Image(systemName: "sparkles")
                 .font(.system(size: 34))
                 .foregroundStyle(Theme.accent)
-            Text("Écrivez un message pour commencer")
+            Text(L10n.t("empty_state"))
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }

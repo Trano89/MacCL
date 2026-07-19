@@ -2,9 +2,9 @@ import Foundation
 
 /// Append-only diagnostic log at ~/Library/Logs/MacCL/maccl.log.
 ///
-/// The bridges (Node router, LiteLLM) and the `claude` child all write to stderr;
-/// without this their output was drained and dropped, so failures like "it ran
-/// two minutes then nothing" left no trace. Everything lands here instead.
+/// The `claude` child writes its diagnostics to stderr; without this they were
+/// drained and dropped, so failures like "it ran two minutes then nothing" left
+/// no trace at all. Everything lands here instead.
 enum AppLog {
     private static let queue = DispatchQueue(label: "maccl.applog")
     private static let maxBytes = 4 * 1024 * 1024

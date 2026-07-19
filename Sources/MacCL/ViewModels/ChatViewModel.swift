@@ -612,7 +612,9 @@ final class ChatViewModel: ObservableObject {
             .sorted { $0.key < $1.key }
             .map { "\($0.key)=\($0.value)" }
             .joined(separator: " ")
-        let cmd = "claude " + config.cliArguments(resume: resumed, forDisplay: true)
+        // The real binary path, not a bare "claude": a CLI installed outside
+        // the PATH would otherwise be misreported.
+        let cmd = config.claudePath + " " + config.cliArguments(resume: resumed, forDisplay: true)
             .joined(separator: " ")
         let prefix = env.isEmpty ? "" : env + " "
         return "$ cd \"\(config.workingDirectory)\"\n$ \(prefix)\(cmd)\n> /effort \(config.effort.cliValue)"
@@ -1054,11 +1056,22 @@ private enum secretRedactor {
     // Regexes compiled once; re-used on every call to avoid per-call allocation/compilation.
     private static let compiled = { () -> [NSRegularExpression] in
         var result: [NSRegularExpression] = []
+        // Modern token formats almost all contain '-', '_' or '.', which the
+        // generic base64 rule below deliberately excludes (widening it would
+        // swallow every long file path and make the log useless). So each shape
+        // gets its own precise rule instead.
         for pat in [
-            "sk-[A-Za-z0-9]{20,}",
-            "ghp_[A-Za-z0-9]{36}",
-            "glpat-[A-Za-z0-9]{20,}",
-            "[A-Za-z0-9+/]{40,}={0,2}",
+            "sk-ant-[A-Za-z0-9_-]{20,}",            // Anthropic
+            "sk-proj-[A-Za-z0-9_-]{20,}",           // OpenAI project keys
+            "sk-[A-Za-z0-9]{20,}",                  // OpenAI classic
+            "ghp_[A-Za-z0-9]{36}",                  // GitHub classic PAT
+            "gh[opsu]_[A-Za-z0-9]{36,}",            // other GitHub tokens
+            "github_pat_[A-Za-z0-9_]{20,}",         // GitHub fine-grained PAT
+            "glpat-[A-Za-z0-9_-]{20,}",             // GitLab
+            "xox[baprs]-[A-Za-z0-9-]{10,}",         // Slack
+            "eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}",  // JWT
+            "AKIA[0-9A-Z]{16}",                     // AWS access key id
+            "[A-Za-z0-9+/]{40,}={0,2}",             // long unbroken base64 run
         ] {
             if let rx = try? NSRegularExpression(pattern: pat) { result.append(rx) }
         }

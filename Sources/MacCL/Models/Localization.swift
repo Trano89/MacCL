@@ -81,6 +81,19 @@ enum L10n {
         "version": ("Version", "Version", "Version", "Versão", "Versión"),
 
         // Appearance
+        // Composer + transcript chrome
+        "empty_state": ("Écrivez un message pour commencer", "Write a message to get started", "Schreiben Sie eine Nachricht, um zu beginnen", "Escreva uma mensagem para começar", "Escribe un mensaje para comenzar"),
+        "write_placeholder": ("Écrivez à Claude…", "Message Claude…", "Nachricht an Claude…", "Escreva para o Claude…", "Escribe a Claude…"),
+        "attach_help": ("Joindre des fichiers", "Attach files", "Dateien anhängen", "Anexar ficheiros", "Adjuntar archivos"),
+        "interrupt_help": ("Interrompre", "Stop", "Anhalten", "Interromper", "Detener"),
+        "send_help": ("Envoyer (Retour)", "Send (Return)", "Senden (Eingabe)", "Enviar (Retorno)", "Enviar (Retorno)"),
+        "model_help": ("Choisir le modèle (LLM)", "Choose the model (LLM)", "Modell (LLM) wählen", "Escolher o modelo (LLM)", "Elegir el modelo (LLM)"),
+        "perm_help": ("Permissions — cliquer pour changer.", "Permissions — click to change.", "Berechtigungen — zum Ändern klicken.", "Permissões — clique para mudar.", "Permisos — clic para cambiar."),
+        "effort_help": ("Effort de raisonnement — cliquer pour changer.", "Reasoning effort — click to change.", "Denkaufwand — zum Ändern klicken.", "Esforço de raciocínio — clique para mudar.", "Esfuerzo de razonamiento — clic para cambiar."),
+        "instructions_help": ("Instructions .md injectées dans le prompt", ".md instructions injected into the prompt", "In den Prompt eingefügte .md-Anweisungen", "Instruções .md injetadas no prompt", "Instrucciones .md inyectadas en el prompt"),
+        "effort_label": ("Effort : %@", "Effort: %@", "Aufwand: %@", "Esforço: %@", "Esfuerzo: %@"),
+        "tab_general": ("Général", "General", "Allgemein", "Geral", "General"),
+        "tab_appearance": ("Apparence", "Appearance", "Erscheinungsbild", "Aparência", "Apariencia"),
         // Agents panel
         "agents_title": ("Agents", "Agents", "Agenten", "Agentes", "Agentes"),
         "agents_empty": ("Aucun sous-agent dans cette conversation. Ils apparaissent quand Claude Code délègue une tâche (outil Task).", "No sub-agents in this conversation. They appear when Claude Code delegates a task (Task tool).", "Keine Sub-Agenten in dieser Unterhaltung. Sie erscheinen, wenn Claude Code eine Aufgabe delegiert (Task-Tool).", "Nenhum subagente nesta conversa. Aparecem quando o Claude Code delega uma tarefa (ferramenta Task).", "No hay subagentes en esta conversación. Aparecen cuando Claude Code delega una tarea (herramienta Task)."),

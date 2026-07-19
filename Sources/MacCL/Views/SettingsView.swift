@@ -7,11 +7,11 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             GeneralTab()
-                .tabItem { Label("Général", systemImage: "gearshape") }
+                .tabItem { Label(L10n.t("tab_general"), systemImage: "gearshape") }
             AppearanceTab()
-                .tabItem { Label("Apparence", systemImage: "swatchpalette") }
+                .tabItem { Label(L10n.t("tab_appearance"), systemImage: "swatchpalette") }
             AboutTab()
-                .tabItem { Label("À propos", systemImage: "info.circle") }
+                .tabItem { Label(L10n.t("about"), systemImage: "info.circle") }
         }
         .frame(width: 560, height: 640)
     }
@@ -67,7 +67,7 @@ private struct GeneralTab: View {
                 Text(L10n.t("ollama_tuning_note"))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("OLLAMA_CONTEXT_LENGTH=262144   # jusqu'à 1000000 si modèle + RAM\nOLLAMA_KEEP_ALIVE=30m\nOLLAMA_FLASH_ATTENTION=1\nOLLAMA_KV_CACHE_TYPE=q8_0        # RAM du contexte ÷2 (q4_0 : ÷4)")
+                Text("OLLAMA_CONTEXT_LENGTH=262144\nOLLAMA_KEEP_ALIVE=30m\nOLLAMA_FLASH_ATTENTION=1\nOLLAMA_KV_CACHE_TYPE=q8_0")
                     .font(.system(.caption, design: .monospaced))
                     .textSelection(.enabled)
                     .padding(8)
