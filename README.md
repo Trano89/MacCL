@@ -62,13 +62,19 @@ That's it — MacCL is now in your Applications folder, ready to launch from Spo
 
 **Ollama on this Mac** — nothing to do either. `http://localhost:11434` is detected automatically.
 
-**Ollama on another machine** — on the machine that has the models, start Ollama so it accepts network connections:
+**Ollama on another machine** — by default Ollama only listens to its own computer, so the first step happens *on the machine that holds the models*: let it accept connections from the network.
+
+In the Ollama app, that's a single switch — **Settings → Expose Ollama to the network**:
+
+![Ollama settings: expose to the network](docs/img/ollama-network.svg)
+
+On a headless server, the same thing as an environment variable:
 
 ```bash
 OLLAMA_HOST=0.0.0.0 ollama serve
 ```
 
-Then in MacCL, hit **Scan** to sweep your network — or just type the machine's IP address (`192.168.1.20` is enough; the rest is filled in for you).
+Then, back in MacCL: hit **Scan** to sweep your network — or just type the machine's IP address (`192.168.1.20` is enough; `http://` and port `11434` are filled in for you). The conversation is then bound to that machine.
 
 **Models on the server** — click the server chip → *Manage models*: see what's installed (with sizes), delete with one click, or type terminal-style commands — `pull qwen3:14b`, `rm llama3:8b`, `cp a b`, `create fast from qwen3:8b num_ctx 8192`. Works the same on a remote machine — it's all Ollama's HTTP API.
 
