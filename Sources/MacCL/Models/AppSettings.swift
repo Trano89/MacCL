@@ -30,6 +30,13 @@ final class AppSettings: ObservableObject {
             if validated != oldValue { defaults.set(validated, forKey: "ollamaBaseURL") }
         }
     }
+    /// Cap on a single reply's output tokens (CLAUDE_CODE_MAX_OUTPUT_TOKENS).
+    /// The CLI's own default is 32k; a long agentic turn hits it and dies mid-way
+    /// ("response exceeded the … output token maximum"), so the app raises it —
+    /// and now lets you raise it further.
+    @Published var maxOutputTokens: Int {
+        didSet { defaults.set(maxOutputTokens, forKey: "maxOutputTokens") }
+    }
     @Published var streamPartialMessages: Bool {
         didSet { defaults.set(streamPartialMessages, forKey: "streamPartialMessages") }
     }
@@ -79,6 +86,8 @@ final class AppSettings: ObservableObject {
             ?? PermissionMode.bypassPermissions.rawValue
         effortLevelRaw = defaults.string(forKey: "effortLevelRaw") ?? EffortLevel.high.rawValue
         ollamaBaseURL = defaults.string(forKey: "ollamaBaseURL") ?? "http://localhost:11434"
+        maxOutputTokens = defaults.integer(forKey: "maxOutputTokens") == 0
+            ? 64_000 : max(8_000, min(512_000, defaults.integer(forKey: "maxOutputTokens")))
         streamPartialMessages = defaults.object(forKey: "streamPartialMessages") as? Bool ?? true
         showReasoning = defaults.object(forKey: "showReasoning") as? Bool ?? true
         languageRaw = defaults.string(forKey: "languageRaw") ?? AppLanguage.systemDefault.rawValue

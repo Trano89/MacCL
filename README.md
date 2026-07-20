@@ -40,6 +40,7 @@ One more thing worth knowing: **each conversation is tied to the server you pick
 - Light / dark / automatic theme, 12 accent colors
 - Interface in 5 languages (EN, FR, DE, PT, ES)
 - Manage the models of any Ollama server from inside the app — `pull`, `rm`, `cp`, `create` — even on a remote machine
+- Adjustable reply-length cap, when a long agentic turn hits the CLI's output-token ceiling
 - Built-in update check against this repository's releases (Settings → About)
 
 ## Installation

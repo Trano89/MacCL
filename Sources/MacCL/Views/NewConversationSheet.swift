@@ -218,7 +218,8 @@ struct NewConversationSheet: View {
             claudePath: "claude", workingDirectory: workingDirectory, model: m,
             permissionMode: permission, effort: effort,
             appendSystemPrompt: convInstructions,
-            streamPartial: settings.streamPartialMessages, sessionId: "<uuid>")
+            streamPartial: settings.streamPartialMessages, sessionId: "<uuid>",
+            maxOutputTokens: settings.maxOutputTokens)
         let cmd = "claude " + config.cliArguments(resume: false, forDisplay: true)
             .joined(separator: " ")
         // Two-step launch, like a human at a terminal: minimal command first,
