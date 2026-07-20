@@ -54,13 +54,22 @@ struct LLMModel: Identifiable, Hashable {
 
     /// Build an Ollama entry from a model name reported by `/api/tags`.
     /// `host` is the server it lives on — shown as the subtitle so the user
-    /// always sees which machine a model comes from.
-    static func ollama(_ name: String, host: String = "localhost", capabilities: [String] = []) -> LLMModel {
+    /// always sees which machine a model comes from. The context ceiling is
+    /// shown too: Ollama silently clamps any request to it, so it's the number
+    /// that actually decides how long a conversation can get.
+    static func ollama(_ name: String, host: String = "localhost",
+                       capabilities: [String] = [], contextMax: Int? = nil) -> LLMModel {
         var subtitle = host
+        if let ctx = contextMax { subtitle += " · \(Self.formatContext(ctx)) ctx" }
         if capabilities.contains("tools") { subtitle += " · outils" }
         if capabilities.contains("vision") { subtitle += " · vision" }
         return LLMModel(id: "ollama:\(name)", provider: .ollama, name: name,
                         modelArg: name, serverName: host, subtitle: subtitle)
+    }
+
+    /// 40960 → "40k", 262144 → "256k", 10485760 → "10M".
+    static func formatContext(_ tokens: Int) -> String {
+        tokens >= 1_048_576 ? "\(tokens / 1_048_576)M" : "\(tokens / 1024)k"
     }
 }
 

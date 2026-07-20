@@ -11,22 +11,32 @@ struct ChatView: View {
     @State private var showSlashCommands = false
     @State private var showModelPicker = false
     @State private var showServerPicker = false
+    @State private var showTokenPopover = false
 
     private static let fallbackSlashCommands = [
         "compact", "context", "init", "review", "security-review", "usage",
     ]
 
     var body: some View {
-        VStack(spacing: 0) {
-            transcript
-            reasoningPanel
-            Divider()
-            composer
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                transcript
+                reasoningPanel
+                Divider()
+                composer
+            }
+            if vm.showAgentsPanel {
+                Divider()
+                AgentsPanel(vm: vm)
+                    .frame(width: 320)
+                    .transition(.move(edge: .trailing))
+            }
         }
+        .animation(.easeOut(duration: 0.18), value: vm.showAgentsPanel)
     }
 
     @ViewBuilder private var reasoningPanel: some View {
-        if !vm.currentReasoning.isEmpty {
+        if settings.showReasoning, !vm.currentReasoning.isEmpty {
             ReasoningPanel(text: vm.currentReasoning, isLive: vm.isRunning)
                 .padding(.horizontal, 20)
                 .padding(.top, 10)
@@ -45,7 +55,11 @@ struct ChatView: View {
                             .padding(.top, 60)
                     }
                     ForEach(vm.items) { item in
-                        MessageRow(item: item)
+                        // .equatable(): during streaming only the LAST row's item
+                        // changes; every other visible row now short-circuits its
+                        // body instead of re-laying out on each token.
+                        MessageRow(item: item, onOpenAgent: { vm.openAgent($0) })
+                            .equatable()
                             .id(item.id)
                     }
                     if vm.isRunning {
@@ -67,9 +81,7 @@ struct ChatView: View {
                 .readingColumn()
             }
             .frame(maxHeight: .infinity, alignment: .bottom)
-            // Use itemsToken (batched by ChatViewModel) instead of items.count
-            // to avoid a scroll recalc on every streaming append.
-            .onChange(of: vm.itemsToken) { _, _ in
+            .onChange(of: vm.items.count) { _, _ in
                 withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }
             }
             .onChange(of: vm.isRunning) { _, _ in
@@ -109,9 +121,9 @@ struct ChatView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.large)
-                .help("Joindre des fichiers")
+                .help(L10n.t("attach_help"))
 
-                TextField("Écrivez à Claude…", text: $vm.composer, axis: .vertical)
+                TextField(L10n.t("write_placeholder"), text: $vm.composer, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.body)
                     .lineLimit(1...10)
@@ -132,7 +144,7 @@ struct ChatView: View {
                             Image(systemName: "stop.fill").frame(width: 20, height: 20)
                         }
                         .tint(.secondary)
-                        .help("Interrompre")
+                        .help(L10n.t("interrupt_help"))
                     } else {
                         Button(action: vm.send) {
                             Image(systemName: "arrow.up").frame(width: 20, height: 20)
@@ -140,7 +152,7 @@ struct ChatView: View {
                         .tint(Theme.accent)
                         .disabled(!vm.canSend)
                         .keyboardShortcut(.return, modifiers: [])
-                        .help("Envoyer (Retour)")
+                        .help(L10n.t("send_help"))
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -171,7 +183,7 @@ struct ChatView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.large)
-        .help("Commandes Claude Code")
+        .help(L10n.t("commands_help"))
         .sheet(isPresented: $showSlashCommands) {
             SlashCommandsSheet(
                 commands: vm.slashCommands.isEmpty ? Self.fallbackSlashCommands : vm.slashCommands
@@ -193,6 +205,65 @@ struct ChatView: View {
             folderButton
             instructionsButton
             Spacer(minLength: 0)
+            tokenChip
+        }
+    }
+
+    /// Bottom-right token gauge: the conversation's current context footprint.
+    /// Click → detail + one-click context compaction.
+    private var tokenChip: some View {
+        Button {
+            showTokenPopover = true
+        } label: {
+            Label(Self.formatTokens(vm.contextTokens), systemImage: "chart.pie")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .help(L10n.t("tokens_help"))
+        .popover(isPresented: $showTokenPopover, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(L10n.t("tokens_title")).font(.headline)
+                Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 6) {
+                    GridRow {
+                        Text(L10n.t("tokens_context")).foregroundStyle(.secondary)
+                        Text(Self.formatTokens(vm.contextTokens)).monospacedDigit()
+                    }
+                    GridRow {
+                        Text(L10n.t("tokens_in")).foregroundStyle(.secondary)
+                        Text(Self.formatTokens(vm.totalInputTokens)).monospacedDigit()
+                    }
+                    GridRow {
+                        Text(L10n.t("tokens_out")).foregroundStyle(.secondary)
+                        Text(Self.formatTokens(vm.totalOutputTokens)).monospacedDigit()
+                    }
+                }
+                Divider()
+                Button {
+                    showTokenPopover = false
+                    vm.compactContext()
+                } label: {
+                    Label(L10n.t("compact_now"), systemImage: "arrow.down.right.and.arrow.up.left")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Theme.accent)
+                .disabled(!vm.canSend || vm.items.isEmpty)
+                Text(L10n.t("compact_hint"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(14)
+            .frame(width: 270)
+        }
+    }
+
+    /// 850 → "850" · 23400 → "23,4k" · 1250000 → "1,3M".
+    private static func formatTokens(_ n: Int) -> String {
+        switch n {
+        case ..<1000: return "\(n)"
+        case ..<1_000_000: return String(format: "%.1fk", Double(n) / 1000)
+        default: return String(format: "%.1fM", Double(n) / 1_000_000)
         }
     }
 
@@ -241,7 +312,7 @@ struct ChatView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .help("Choisir le modèle (LLM)")
+        .help(L10n.t("model_help"))
         .sheet(isPresented: $showModelPicker) {
             ModelPickerSheet(vm: vm)
         }
@@ -258,7 +329,7 @@ struct ChatView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .help("Permissions — cliquer pour changer. \(settings.permissionMode.explanation)")
+        .help(L10n.t("perm_help") + " " + settings.permissionMode.explanation)
     }
 
     /// Click cycles the reasoning effort level.
@@ -266,7 +337,7 @@ struct ChatView: View {
         Button {
             let all = EffortLevel.allCases
             let idx = all.firstIndex(of: settings.effortLevel) ?? 0
-            settings.effortLevel = all[(idx + 1) % all.count]
+            vm.applyEffort(all[(idx + 1) % all.count])   // live: sends /effort in-band
         } label: {
             HStack(spacing: 4) {
                 EffortIndicator(level: settings.effortLevel, compact: true)
@@ -275,7 +346,7 @@ struct ChatView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .help("Effort de raisonnement — cliquer pour changer. \(settings.effortLevel.explanation)")
+        .help(L10n.t("effort_help") + " " + settings.effortLevel.explanation)
     }
 
     private var folderButton: some View {
@@ -284,7 +355,7 @@ struct ChatView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .help("Dossier de travail : \(settings.workingDirectory)")
+        .help(L10n.t("folder_help") + " : " + settings.workingDirectory)
     }
 
     private var instructionsButton: some View {
@@ -296,7 +367,7 @@ struct ChatView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .help("Instructions .md injectées dans le prompt")
+        .help(L10n.t("instructions_help"))
     }
 
     private var folderDisplayName: String {
@@ -336,7 +407,7 @@ private struct EmptyState: View {
             Image(systemName: "sparkles")
                 .font(.system(size: 34))
                 .foregroundStyle(Theme.accent)
-            Text("Écrivez un message pour commencer")
+            Text(L10n.t("empty_state"))
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }

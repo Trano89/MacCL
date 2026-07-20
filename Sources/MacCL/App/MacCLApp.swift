@@ -1,19 +1,11 @@
 import SwiftUI
 import AppKit
 
-/// Releases the resident Ollama model(s) and stops the router when the app quits.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Anti-AppNap: we prevent macOS from throttling this process by keeping it
-        // as a regular app (not accessory/prohibited).  macOS only applies App Nap
-        // to apps with windows that are in the background and not receiving input,
-        // so a regular activation policy gives us the best chance of staying alive.
-    }
-
-    func applicationWillTerminate(_ notification: Notification) {
-        Task { @MainActor in
-            await ModelRouter.shared.cleanupOnQuitAsync()
-        }
+        // The app owns no server-side state to release on quit: `claude` talks
+        // straight to Ollama, and how long a model stays resident is the server's
+        // own OLLAMA_KEEP_ALIVE. Nothing to unload, nothing to leak.
     }
 }
 
@@ -28,11 +20,11 @@ struct MacCLApp: App {
             ContentView()
                 .environmentObject(settings)
                 .environmentObject(coordinator)
-                .accentColor(settings.accentColor)
+                .tint(coordinator.accentColor)
                 .frame(minWidth: 900, minHeight: 600)
-                .onAppear {
-                    AppearanceCoordinator.shared.applyTo(NSApplication.shared.mainWindow)
-                }
+                // Windows adopt the theme via the coordinator's key-window
+                // observer; this covers the very first window at launch.
+                .onAppear { coordinator.apply() }
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)
@@ -44,7 +36,7 @@ struct MacCLApp: App {
             SettingsView()
                 .environmentObject(settings)
                 .environmentObject(coordinator)
-                .accentColor(settings.accentColor)
+                .tint(coordinator.accentColor)
         }
     }
 }

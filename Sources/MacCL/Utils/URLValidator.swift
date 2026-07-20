@@ -1,7 +1,7 @@
 import Foundation
 
 /// Shared URL validator used throughout MacCL to validate Ollama server URLs.
-/// Centralized here to prevent validation drift across AppSettings, ModelRouter, and RouterProcess.
+/// Centralized here to prevent validation drift between AppSettings and ModelRouter.
 ///
 /// ## Design rationale
 /// - **Single source of truth**: Every file that deals with a server URL calls `sanitizeAndValidate`
@@ -14,21 +14,42 @@ enum URLValidator {
 
     // MARK: - Public API
 
+    /// The port Ollama listens on unless told otherwise.
+    static let defaultOllamaPort = 11434
+
     /// Sanitize then validate a server URL string.
     ///
     /// Returns the validated (possibly sanitized) URL string, or `nil` if the input cannot be made valid.
     /// Sanitization steps (applied before validation):
     /// 1. Trim leading/trailing whitespace (common copy-paste artifact).
     /// 2. Prepend `"http://"` if no scheme is present — Ollama servers typically use HTTP in local setups.
+    /// 3. Append `":11434"` to a plain-http address with no port. Typing a bare
+    ///    `192.168.1.20` is the whole point: without this it resolves to port 80
+    ///    and fails with nothing on screen to explain why. Left alone for
+    ///    `https://`, where a bare host means a reverse proxy on 443.
     ///
     /// **This is the preferred entry point for UI forms** where you want to give early visual feedback.
     static func sanitizeAndValidate(_ input: String) -> String? {
         var url = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !url.isEmpty else { return nil }
 
-        // Auto-correct missing scheme — Ollama defaults to HTTP for local connections.
-        if !url.hasPrefix("http://") && !url.hasPrefix("https://") {
+        // A scheme we don't speak is a mistake to report, not one to paper over:
+        // blindly prefixing turns "ftp://host" into "http://ftp://host", which
+        // parses, passes validation, and quietly points at a host named "ftp".
+        if let sep = url.range(of: "://") {
+            let scheme = url[url.startIndex..<sep.lowerBound].lowercased()
+            guard scheme == "http" || scheme == "https" else { return nil }
+        } else {
+            // Auto-correct missing scheme — Ollama speaks plain HTTP on a LAN.
             url = "http://" + url
+        }
+        // Drop a trailing slash before reasoning about the port, so "1.2.3.4/"
+        // doesn't end up as "1.2.3.4/:11434".
+        while url.hasSuffix("/") { url = String(url.dropLast()) }
+
+        if let parsed = URL(string: url), parsed.port == nil,
+           parsed.scheme == "http", parsed.host?.isEmpty == false {
+            url += ":\(defaultOllamaPort)"
         }
 
         return validateServerURL(url) ? url : nil

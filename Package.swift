@@ -8,9 +8,6 @@ let package = Package(
         .executableTarget(
             name: "MacCL",
             path: "Sources/MacCL",
-            resources: [
-                .copy("../../router/anthropic-ollama-proxy.mjs"),
-            ],
             swiftSettings: [
                 // Keep Swift 5 concurrency semantics: this app drives a subprocess
                 // with plenty of callback plumbing; strict Swift 6 concurrency would

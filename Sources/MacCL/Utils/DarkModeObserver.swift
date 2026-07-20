@@ -5,68 +5,50 @@ import AppKit
 enum AppearanceTheme: String, CaseIterable {
     case system, light, dark
 
-    var label: String {
+    @MainActor var label: String { L10n.t("theme_\(rawValue)") }
+
+    /// The forced NSAppearance, or nil for "follow the system".
+    var nsAppearance: NSAppearance? {
         switch self {
-        case .system: return "Système"
-        case .light:  return "Clair"
-        case .dark:   return "Sombre"
+        case .system: return nil
+        case .light:  return NSAppearance(named: .aqua)
+        case .dark:   return NSAppearance(named: .darkAqua)
         }
     }
 }
 
 // MARK: - AppearanceCoordinator
 
+/// The ONE owner of clair/sombre/automatique. Views change `theme`; every
+/// window (current and future) follows, including the Settings window.
 @MainActor
 final class AppearanceCoordinator: ObservableObject {
     static let shared = AppearanceCoordinator()
 
-    @Published var theme: AppearanceTheme = .system
-    /// Accent color read from AppSettings and propagated to all windows.
+    @Published var theme: AppearanceTheme {
+        didSet {
+            AppSettings.shared.appearanceThemeRaw = theme.rawValue
+            apply()
+        }
+    }
+    /// Accent color mirrored from AppSettings so views can observe one object.
     @Published var accentColor: Color
 
     private init() {
-        self.accentColor = AppSettings.shared.accentColor
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(defaultsChanged),
-            name: UserDefaults.didChangeNotification, object: nil)
+        theme = AppearanceTheme(rawValue: AppSettings.shared.appearanceThemeRaw) ?? .system
+        accentColor = AppSettings.shared.accentColor
     }
 
-    @objc private func defaultsChanged() {
-        let raw = UserDefaults.standard.string(forKey: "appearanceThemeRaw") ?? "system"
-        let newTheme = AppearanceTheme(rawValue: raw) ?? .system
-        if newTheme != theme {
-            theme = newTheme
-            applyAllWindowsAppearance()
-        }
-        let newAccent = AppSettings.shared.accentColor
-        if newAccent != accentColor {
-            accentColor = newAccent
-        }
+    func accentChanged() {
+        accentColor = AppSettings.shared.accentColor
     }
 
-    private func applyAllWindowsAppearance() {
-        guard theme != .system else { return }
-        let nsApp: NSAppearance?
-        switch theme {
-        case .light:  nsApp = NSAppearance(named: .aqua)
-        case .dark:   nsApp = NSAppearance(named: .darkAqua)
-        case .system: nsApp = nil
-        }
-        guard let appearance = nsApp else { return }
-        for w in NSApplication.shared.windows where w.appearance !== appearance {
-            w.appearance = appearance
-        }
-    }
-
-    func applyTo(_ window: NSWindow?) {
-        guard let w = window else { return }
-        let nsApp: NSAppearance?
-        switch theme {
-        case .light:  nsApp = NSAppearance(named: .aqua)
-        case .dark:   nsApp = NSAppearance(named: .darkAqua)
-        case .system: nsApp = nil
-        }
-        guard let appearance = nsApp else { return }
-        if w.appearance !== appearance { w.appearance = appearance }
+    /// Force (or release) the appearance for the WHOLE application in one move.
+    /// `NSApp.appearance` is the canonical switch: unlike the old per-window
+    /// loop it also covers sheets, popovers, menus, alerts, the Settings scene
+    /// and every window opened later — which is why parts of the UI used to be
+    /// left behind on clair ↔ sombre. `nil` = follow the system (automatique).
+    func apply() {
+        NSApp.appearance = theme.nsAppearance
     }
 }

@@ -15,7 +15,7 @@ struct EffortIndicator: View {
                            height: 3 + CGFloat(i) * (compact ? 1.6 : 2.4))
             }
         }
-        .accessibilityLabel("Effort : \(level.label)")
+        .accessibilityLabel(L10n.t("effort_label", level.label))
         .animation(.easeOut(duration: 0.15), value: level)
     }
 }

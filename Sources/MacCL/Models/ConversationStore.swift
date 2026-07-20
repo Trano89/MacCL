@@ -21,6 +21,10 @@ struct Conversation: Identifiable, Codable {
     var group: String?
     var items: [ChatItem]
     var totalCostUSD: Double
+    // Token accounting (optional: files saved before it existed still decode).
+    var contextTokens: Int?
+    var totalInputTokens: Int?
+    var totalOutputTokens: Int?
 }
 
 /// Lightweight metadata for the history list (decoded without the items).
@@ -67,14 +71,22 @@ final class ConversationStore: ObservableObject {
 
     func save(_ conversation: Conversation) {
         let url = AppPaths.conversations.appendingPathComponent("\(conversation.id).json")
-        if let data = try? encoder.encode(conversation) {
-            do {
-                try data.write(to: url, options: .atomic)
-            } catch {
-                AppLog.error("store", "save failed for \(conversation.id): \(error.localizedDescription)")
-            }
+        do {
+            try encoder.encode(conversation).write(to: url, options: .atomic)
+        } catch {
+            // Swallowing this used to lose conversations with zero trace.
+            AppLog.write("store", "save failed for \(conversation.id): \(error.localizedDescription)")
+            return
         }
-        reload()
+        // Update the one affected summary in place — the old full reload()
+        // re-read and re-decoded EVERY conversation file on disk, twice per turn.
+        let summary = ConversationSummary(id: conversation.id, title: conversation.title,
+                                          updatedAt: conversation.updatedAt,
+                                          modelId: conversation.modelId,
+                                          group: conversation.group)
+        summaries.removeAll { $0.id == summary.id }
+        summaries.append(summary)
+        summaries.sort { $0.updatedAt > $1.updatedAt }
     }
 
     func load(_ id: String) -> Conversation? {
@@ -86,7 +98,7 @@ final class ConversationStore: ObservableObject {
     func delete(_ id: String) {
         try? FileManager.default.removeItem(
             at: AppPaths.conversations.appendingPathComponent("\(id).json"))
-        reload()
+        summaries.removeAll { $0.id == id }
     }
 
     /// Assign (or clear, with nil) a conversation's group.

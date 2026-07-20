@@ -7,13 +7,13 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             GeneralTab()
-                .tabItem { Label("Général", systemImage: "gearshape") }
+                .tabItem { Label(L10n.t("tab_general"), systemImage: "gearshape") }
             DiagnosticDashboardView()
-                .tabItem { Label("Diagnostics", systemImage: "chart.line.uptrend.xyaxis") }
+                .tabItem { Label(L10n.t("tab_diagnostics"), systemImage: "chart.line.uptrend.xyaxis") }
             AppearanceTab()
-                .tabItem { Label("Apparence", systemImage: "swatchpalette") }
+                .tabItem { Label(L10n.t("tab_appearance"), systemImage: "swatchpalette") }
             AboutTab()
-                .tabItem { Label("À propos", systemImage: "info.circle") }
+                .tabItem { Label(L10n.t("about"), systemImage: "info.circle") }
         }
         .frame(width: 560, height: 640)
     }
@@ -24,32 +24,17 @@ struct SettingsView: View {
 private struct GeneralTab: View {
     @EnvironmentObject var settings: AppSettings
 
-    @State private var litellmInstalling = false
-    @State private var litellmMessage = ""
-    @State private var litellmFailed = false
-
-    private var detectedClaude: String {
-        BinaryLocator.find("claude", override: settings.claudePathOverride) ?? L10n.t("not_found")
+    private var claudePath: String? {
+        BinaryLocator.find("claude", override: settings.claudePathOverride)
     }
-    private var detectedNode: String {
-        BinaryLocator.find("node") ?? L10n.t("not_found")
-    }
-
-    /// Valid context window range for Ollama models.
-    /// 1024 is the minimum useful context; 262144 (256k) is the max many recent
-    /// models (qwen3, etc.) support. Large values reserve a lot of RAM.
-    private static let ctxRange = 1024...262_144
-
-    /// Valid num_predict range for user-enterable presets (special values -1 and 0 excluded).
-    private static let predictUserRange = 128...65_536
 
     var body: some View {
         Form {
             Section("Claude Code") {
                 LabeledContent(L10n.t("detected_binary")) {
-                    Text(detectedClaude)
+                    Text(claudePath ?? L10n.t("not_found"))
                         .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(detectedClaude == "introuvable" ? .red : .secondary)
+                        .foregroundStyle(claudePath == nil ? .red : .secondary)
                         .textSelection(.enabled)
                 }
                 TextField(L10n.t("custom_path"), text: $settings.claudePathOverride)
@@ -70,230 +55,108 @@ private struct GeneralTab: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            bridgeSection
+            Section(L10n.t("max_output")) {
+                Picker(L10n.t("max_output_label"), selection: $settings.maxOutputTokens) {
+                    Text("32 000").tag(32_000)
+                    Text("64 000 — \(L10n.t("recommended"))").tag(64_000)
+                    Text("128 000").tag(128_000)
+                    Text("256 000").tag(256_000)
+                    Text("512 000").tag(512_000)
+                }
+                Text(L10n.t("max_output_hint"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
-            Section(L10n.t("local_router")) {
+            Section(L10n.t("reasoning")) {
                 Toggle(L10n.t("show_reasoning"), isOn: $settings.showReasoning)
                 Text(L10n.t("reasoning_hint"))
                     .foregroundStyle(.secondary)
-                Stepper(value: $settings.routerPort, in: 1024...65535) {
-                    LabeledContent(L10n.t("router_port"), value: "\(settings.routerPort)")
-                }
-                LabeledContent(L10n.t("node_detected")) {
-                    Text(detectedNode)
-                        .font(.system(.body, design: .monospaced))
-                        .foregroundStyle(detectedNode == L10n.t("not_found") ? .red : .secondary)
-                        .textSelection(.enabled)
-                }
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            contextSection
+            // Context size and residency are Ollama's own settings, not ours: the
+            // Messages API has no field for either, so pretending to control them
+            // from here would be a lie. Say where they actually live.
+            Section(L10n.t("ollama_tuning")) {
+                Text(L10n.t("ollama_tuning_note"))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("OLLAMA_CONTEXT_LENGTH=262144\nOLLAMA_KEEP_ALIVE=30m\nOLLAMA_FLASH_ATTENTION=1\nOLLAMA_KV_CACHE_TYPE=q8_0")
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.card, in: RoundedRectangle(cornerRadius: 6))
+            }
         }
         .formStyle(.grouped)
     }
-
-    // MARK: - Bridge engine (built-in router vs LiteLLM)
-
-    private var bridgeSection: some View {
-        Section(L10n.t("bridge_engine")) {
-            Picker(L10n.t("bridge_engine"), selection: Binding(
-                get: { settings.bridgeEngine },
-                set: { settings.bridgeEngine = $0 }
-            )) {
-                ForEach(BridgeEngine.allCases) { Text($0.label).tag($0) }
-            }
-            Text(settings.bridgeEngine.explanation)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if settings.bridgeEngine == .litellm {
-                LabeledContent(L10n.t("litellm_status")) {
-                    if litellmInstalling {
-                        HStack(spacing: 6) {
-                            ProgressView().controlSize(.small)
-                            Text(litellmMessage)
-                                .foregroundStyle(.secondary)
-                        }
-                    } else if ModelRouter.shared.litellm.isInstalled {
-                        Text(L10n.t("litellm_installed"))
-                            .foregroundStyle(.green)
-                    } else {
-                        Button(L10n.t("litellm_install")) { installLiteLLM() }
-                    }
-                }
-                if !litellmMessage.isEmpty && !litellmInstalling {
-                    Text(litellmMessage)
-                        .foregroundStyle(litellmFailed ? .red : .secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Stepper(value: $settings.litellmPort, in: 1024...65535) {
-                    LabeledContent(L10n.t("litellm_port"), value: "\(settings.litellmPort)")
-                }
-            }
-        }
-    }
-
-    private func installLiteLLM() {
-        litellmInstalling = true
-        litellmFailed = false
-        litellmMessage = ""
-        Task {
-            let err = await ModelRouter.shared.litellm.install { step in
-                Task { @MainActor in litellmMessage = step }
-            }
-            litellmInstalling = false
-            litellmFailed = err != nil
-            litellmMessage = err ?? L10n.t("litellm_install_ok")
-        }
-    }
-
-    // MARK: - Context section (num_ctx / num_predict with range validation)
-
-    private var contextSection: some View {
-        Section(L10n.t("context_tokens")) {
-            Picker(L10n.t("context_window"), selection: $settings.ollamaNumCtx) {
-                Text("8 192").tag(8192)
-                Text("16 384 — \(L10n.t("recommended"))").tag(16_384)
-                Text("32 768").tag(32_768)
-                Text("65 536").tag(65_536)
-                Text("131 072").tag(131_072)
-                Text("262 144 — \(L10n.t("model_max"))").tag(262_144)
-                if !Self.ctxPresets.contains(settings.ollamaNumCtx) {
-                    // Clamp to valid range to prevent out-of-bounds persistence.
-                    let clamped = max(Self.ctxRange.lowerBound, min(Self.ctxRange.upperBound, settings.ollamaNumCtx))
-                    Text("\(clamped) (\(L10n.t("custom_value")))").tag(clamped)
-                }
-            }
-
-            // Custom num_ctx value with range hint visible at all times.
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(L10n.t("custom_value"))
-                    Spacer()
-                    TextField("num_ctx", value: $settings.ollamaNumCtx, format: .number)
-                        .frame(width: 90)
-                        .multilineTextAlignment(.trailing)
-                        .font(.system(.caption, design: .monospaced))
-                }
-                Text("\(L10n.t("ctx_min")) · \(L10n.t("ctx_max"))")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary.opacity(0.6))
-            }
-
-            Text(L10n.t("ctx_hint"))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Picker(L10n.t("max_reply"), selection: $settings.ollamaMaxPredict) {
-                Text(L10n.t("auto_follow")).tag(0)
-                Text(L10n.t("unlimited")).tag(-1)
-                Text("2 048").tag(2048)
-                Text("8 192").tag(8192)
-                Text("32 768").tag(32_768)
-            }
-
-            // Custom num_predict value with range hint visible at all times.
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(L10n.t("custom_value"))
-                    Spacer()
-                    TextField("num_predict", value: $settings.ollamaMaxPredict, format: .number)
-                        .frame(width: 90)
-                        .multilineTextAlignment(.trailing)
-                        .font(.system(.caption, design: .monospaced))
-                }
-                Text("\(L10n.t("predict_min")) · \(L10n.t("predict_max"))")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary.opacity(0.6))
-            }
-
-            Text(L10n.t("predict_hint"))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
 }
 
-/// Preset context window sizes — used for picker display and custom value detection.
-private extension GeneralTab {
-    static let ctxPresets = [8192, 16384, 32768, 65536, 131_072, 262_144]
-}
-
-// MARK: - Appearance tab (unchanged)
+// MARK: - Appearance tab
 
 private struct AppearanceTab: View {
     @EnvironmentObject var settings: AppSettings
-    @State private var coordinator = AppearanceCoordinator.shared
+    @EnvironmentObject var coordinator: AppearanceCoordinator
 
-    // 8 curated accent colors (hex RGB integers)
+    /// Le nuancier — curated hues that hold up as tint in both clair and sombre.
     private static let accentColors: [(name: String, hex: Int)] = [
-        ("Coral",      0xE37654),
-        ("Blue",       0x4A90D9),
-        ("Purple",     0x8B5CF6),
-        ("Green",      0x10B981),
-        ("Red",        0xEF4444),
-        ("Teal",       0x14B8A6),
-        ("Amber",      0xF59E0B),
+        ("Corail",     0xE37654),
+        ("Bleu",       0x4A90D9),
+        ("Indigo",     0x6366F1),
+        ("Violet",     0x8B5CF6),
         ("Rose",       0xF43F5E),
-    ]
-
-    // Display name -> raw value mapping for the theme mode picker
-    private let themeLabels = [
-        ("Système", "system"),
-        ("Clair",   "light"),
-        ("Sombre",  "dark"),
+        ("Rouge",      0xEF4444),
+        ("Ambre",      0xF59E0B),
+        ("Vert",       0x10B981),
+        ("Sarcelle",   0x14B8A6),
+        ("Cyan",       0x06B6D4),
+        ("Graphite",   0x6B7280),
+        ("Brun",       0xA16207),
     ]
 
     var body: some View {
         Form {
             Section(L10n.t("theme_mode")) {
                 Picker("", selection: Binding(
-                    get: { settings.appearanceThemeRaw },
-                    set: {
-                        settings.appearanceThemeRaw = $0
-                        AppearanceCoordinator.shared.theme = AppearanceTheme(rawValue: $0) ?? .system
-                    }
+                    get: { coordinator.theme },
+                    set: { coordinator.theme = $0 }   // didSet persists + applies to all windows
                 )) {
-                    ForEach(themeLabels, id: \.1) { Text($0.0).tag($0.1) }
+                    ForEach(AppearanceTheme.allCases, id: \.self) { Text($0.label).tag($0) }
                 }
-                .pickerStyle(.inline)
+                .pickerStyle(.segmented)
+                .labelsHidden()
             }
 
             Section(L10n.t("accent_color")) {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(0..<Self.accentColors.count / 4, id: \.self) { row in
-                        HStack(spacing: 16) {
-                            ForEach(0..<4, id: \.self) { col in
-                                let idx = row * 4 + col
-                                if idx < Self.accentColors.count {
-                                    colorSwatch(Self.accentColors[idx])
-                                }
-                            }
-                        }
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading),
+                                         count: 3), spacing: 10) {
+                    ForEach(Self.accentColors, id: \.hex) { item in
+                        swatch(item)
                     }
                 }
+                .padding(.vertical, 4)
             }
         }
         .formStyle(.grouped)
     }
 
-    private func colorSwatch(_ item: (name: String, hex: Int)) -> some View {
+    private func swatch(_ item: (name: String, hex: Int)) -> some View {
         let isSelected = settings.accentColorHex == item.hex
+        let color = Color(
+            red: Double((item.hex & 0xFF0000) >> 16) / 255.0,
+            green: Double((item.hex & 0x00FF00) >> 8) / 255.0,
+            blue: Double(item.hex & 0x0000FF) / 255.0)
         return Button {
             settings.accentColorHex = item.hex
+            coordinator.accentChanged()
         } label: {
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 Circle()
-                    .fill(Color(
-                        red: Double((item.hex & 0xFF0000) >> 16) / 255.0,
-                        green: Double((item.hex & 0x00FF00) >> 8) / 255.0,
-                        blue: Double(item.hex & 0x0000FF) / 255.0
-                    ))
-                    .frame(width: 28, height: 28)
-                    .overlay(
-                        Circle()
-                            .stroke(isSelected ? settings.accentColor : Color.clear, lineWidth: 3)
-                    )
+                    .fill(color)
+                    .frame(width: 24, height: 24)
                     .overlay {
                         if isSelected {
                             Image(systemName: "checkmark")
@@ -301,13 +164,16 @@ private struct AppearanceTab: View {
                                 .foregroundStyle(.white)
                         }
                     }
-
+                    .overlay(Circle().stroke(isSelected ? color.opacity(0.5) : .clear, lineWidth: 3)
+                        .padding(-3))
                 Text(item.name)
-                    .foregroundStyle(isSelected ? settings.accentColor : .primary)
+                    .foregroundStyle(isSelected ? color : .primary)
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(item.name)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
@@ -317,18 +183,48 @@ private struct AboutTab: View {
     @EnvironmentObject var settings: AppSettings
 
     // PayPal "donate to an email" flow — opens PayPal pre-filled for this address.
-    private static let donateEmail = "antonin.trottet@gmail.com"
+    private static let donateEmail = "antonin.trottet@icloud.com"
     private static let donateURL = URL(string:
-        "https://www.paypal.com/donate/?business=antonin.trottet%40gmail.com&currency_code=CHF")!
+        "https://www.paypal.com/donate/?business=antonin.trottet%40icloud.com&currency_code=CHF")!
 
     @State private var showThanks = false
+    @State private var checkingUpdate = false
+    @State private var updateStatus: String?
+    @State private var updateAvailable = false
 
     var body: some View {
         Form {
             Section(L10n.t("about")) {
-                LabeledContent(L10n.t("version"), value: "MacCL 0.2.0")
+                LabeledContent(L10n.t("version"), value: "MacCL \(UpdateChecker.currentVersion)")
                 Text(L10n.t("about_text"))
                     .foregroundStyle(.secondary)
+            }
+
+            Section(L10n.t("updates")) {
+                HStack {
+                    if checkingUpdate {
+                        ProgressView().controlSize(.small)
+                        Text(L10n.t("update_checking")).foregroundStyle(.secondary)
+                    } else {
+                        Button(L10n.t("update_check")) { checkForUpdate() }
+                    }
+                    Spacer()
+                    if updateAvailable {
+                        Button {
+                            NSWorkspace.shared.open(UpdateChecker.releasesPage)
+                        } label: {
+                            Label(L10n.t("update_download"), systemImage: "arrow.down.circle")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Theme.accent)
+                    }
+                }
+                if let status = updateStatus {
+                    Text(status)
+                        .font(.caption)
+                        .foregroundStyle(updateAvailable ? Theme.accent : .secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Section(L10n.t("donate")) {
@@ -384,6 +280,24 @@ private struct AboutTab: View {
         .onOpenURL { url in
             if url.host == "www.paypal.com" || url.host == "paypal.me" || url.host == "www.paypal.me" {
                 showThanks = true
+            }
+        }
+    }
+
+    private func checkForUpdate() {
+        checkingUpdate = true
+        updateStatus = nil
+        updateAvailable = false
+        Task {
+            let (outcome, error) = await UpdateChecker.check()
+            checkingUpdate = false
+            if let outcome {
+                updateAvailable = outcome.isNewer
+                updateStatus = outcome.isNewer
+                    ? L10n.t("update_available", outcome.latestTag)
+                    : L10n.t("update_uptodate")
+            } else {
+                updateStatus = error
             }
         }
     }

@@ -11,8 +11,35 @@ struct SessionConfig {
     var appendSystemPrompt: String
     var streamPartial: Bool
     var sessionId: String
-    /// Extra environment (used by the local router to point at Ollama, etc.).
+    /// Cap on one reply's output tokens. 0 = leave the CLI's own default alone.
+    var maxOutputTokens: Int = 64_000
+    /// Extra environment (points `claude` at the conversation's Ollama server).
     var extraEnv: [String: String] = [:]
+
+    /// The `claude` arguments, built ONCE for both the real spawn and the
+    /// transcript display so they can never drift apart. Strict minimum per the
+    /// CLI reference — a flag only appears when it changes something:
+    /// - `--verbose` stays: `-p --output-format stream-json` refuses to run
+    ///   without it (verified against 2.1.207, whatever the docs suggest).
+    /// - `--permission-mode` only when not the CLI default.
+    /// - No `--effort` at all: the reasoning level is applied AFTER launch by
+    ///   sending `/effort <level>` in-band (verified: "Set effort level … (this
+    ///   session only)"), which also makes it changeable mid-conversation.
+    func cliArguments(resume: Bool, forDisplay: Bool = false) -> [String] {
+        var args = ["-p", "--input-format", "stream-json",
+                    "--output-format", "stream-json", "--verbose",
+                    "--model", model.modelArg]
+        if permissionMode != .defaultMode {
+            args += ["--permission-mode", permissionMode.cliValue]
+        }
+        if streamPartial { args += ["--include-partial-messages"] }
+        if !appendSystemPrompt.isEmpty {
+            args += ["--append-system-prompt",
+                     forDisplay ? "\"$(cat instructions/*.md)\"" : appendSystemPrompt]
+        }
+        args += resume ? ["--resume", sessionId] : ["--session-id", sessionId]
+        return args
+    }
 }
 
 /// Drives a single long-lived `claude -p --input-format stream-json` process.
@@ -40,10 +67,19 @@ final class ClaudeSession {
 
     /// Launch the process and send the first user turn. Pass `resume: true` to
     /// continue a persisted session (loaded from history) via --resume.
-    func start(config: SessionConfig, firstContent blocks: [[String: Any]], resume: Bool = false) throws {
+    /// `preCommands` are slash commands (e.g. "/effort high") written BEFORE the
+    /// first turn, so they apply to it — each produces its own instant result.
+    func start(config: SessionConfig, firstContent blocks: [[String: Any]],
+               resume: Bool = false, preCommands: [String] = []) throws {
         self.config = config
         try spawn(config: config, resume: resume)
+        for cmd in preCommands { sendCommand(cmd) }
         write(content: blocks)
+    }
+
+    /// Send a slash command (or any plain text) as its own in-band user turn.
+    func sendCommand(_ text: String) {
+        write(content: [["type": "text", "text": text]])
     }
 
     /// Send a follow-up user turn, restarting (via --resume) if the process died.
@@ -72,20 +108,10 @@ final class ClaudeSession {
     }
 
     func stop() {
-        // 1) Remove readability handlers first — prevents new callbacks from being queued.
+        // Clear readability handlers to prevent old-session callbacks from firing.
         stdoutHandle?.readabilityHandler = nil
         stderrHandle?.readabilityHandler = nil
-        // 2) Clear the session's own property references so nothing can fire after this.
-        let prevStdout = stdoutHandle
-        let prevStderr = stderrHandle
-        let prevStdin = stdinPipe
-        stdoutHandle = nil
-        stderrHandle = nil
-        stdinPipe = nil
-        // 3) Clear buffered data (already-flowing bytes are stale).
         stdoutBuffer.removeAll()
-        // 4) Terminate the process — it will run its own terminationHandler which
-        //    also nils local handle copies, but those are now our dead copies.
         process?.terminate()
         process = nil
     }
@@ -97,35 +123,29 @@ final class ClaudeSession {
         proc.executableURL = URL(fileURLWithPath: config.claudePath)
         proc.currentDirectoryURL = URL(fileURLWithPath: config.workingDirectory)
 
-        var args: [String] = [
-            "-p",
-            "--input-format", "stream-json",
-            "--output-format", "stream-json",
-            "--verbose",
-            "--model", config.model.modelArg,
-            "--permission-mode", config.permissionMode.cliValue,
-            "--effort", config.effort.cliValue,
-        ]
-        if config.streamPartial {
-            args += ["--include-partial-messages"]
-        }
-        if !config.appendSystemPrompt.isEmpty {
-            args += ["--append-system-prompt", config.appendSystemPrompt]
-        }
-        if resume {
-            args += ["--resume", config.sessionId]
-        } else {
-            args += ["--session-id", config.sessionId]
-        }
-        proc.arguments = args
+        proc.arguments = config.cliArguments(resume: resume)
 
         // Environment: inherit, then guarantee a usable PATH and apply overrides.
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = BinaryLocator.mergedPATH(base: env["PATH"])
+        // App-level tuning, set here for every session and kept OUT of the
+        // displayed launch command — it's plumbing, not session identity.
         // Long agentic turns can exceed claude's default 32k output-token cap,
         // killing the turn ("response exceeded the 32000 output token maximum").
-        if env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == nil {
-            env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = "64000"
+        if env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == nil, config.maxOutputTokens > 0 {
+            env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = String(config.maxOutputTokens)
+        }
+        // Ollama's /v1/messages sends nothing while a model cold-loads and the
+        // prompt evaluates (62 s measured); claude's default timeout sits right
+        // there and turned cold turns into a retry loop. Harmless for Anthropic.
+        if env["API_TIMEOUT_MS"] == nil {
+            env["API_TIMEOUT_MS"] = "600000"
+        }
+        // Background calls would evict the conversation's prompt cache on an
+        // Ollama server — one stray request and the next turn re-evaluates the
+        // whole prefix.
+        if env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == nil {
+            env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
         }
         for (k, v) in config.extraEnv { env[k] = v }
         proc.environment = env

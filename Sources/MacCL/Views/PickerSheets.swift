@@ -82,13 +82,35 @@ struct ServerPickerSheet: View {
     @State private var serverURL = ""
     @State private var discovered: [OllamaDiscovery.Server] = []
     @State private var scanning = false
+    /// Model management lives INSIDE this sheet as a mode — nested sheets have
+    /// bitten this app before.
+    @State private var managingModels = false
+
+    /// What the typed address resolves to — `192.168.1.20` → `http://192.168.1.20:11434`.
+    private var resolvedServerURL: String? { URLValidator.sanitizeAndValidate(serverURL) }
 
     var body: some View {
+        if managingModels {
+            ModelManagerView(serverURL: resolvedServerURL ?? vm.conversationServerURL) {
+                managingModels = false
+            }
+        } else {
+            pickerBody
+        }
+    }
+
+    private var pickerBody: some View {
         VStack(spacing: 0) {
             HStack {
                 Label(L10n.t("conv_server"), systemImage: "server.rack")
                     .font(.headline)
                 Spacer()
+                Button {
+                    managingModels = true
+                } label: {
+                    Label(L10n.t("manage_models"), systemImage: "wrench.and.screwdriver")
+                }
+                .controlSize(.small)
                 Button {
                     Task { await scan() }
                 } label: {
@@ -106,8 +128,20 @@ struct ServerPickerSheet: View {
 
             List {
                 Section {
-                    TextField("http://192.168.1.10:11434", text: $serverURL)
-                        .font(.system(.body, design: .monospaced))
+                    HStack(spacing: 8) {
+                        TextField("192.168.1.10", text: $serverURL)
+                            .font(.system(.body, design: .monospaced))
+                            .onSubmit { if let r = resolvedServerURL { serverURL = r } }
+                        if !serverURL.isEmpty {
+                            Image(systemName: resolvedServerURL == nil
+                                  ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
+                                .foregroundStyle(resolvedServerURL == nil ? .orange : .green)
+                                .help(resolvedServerURL ?? L10n.t("invalid_ollama_url"))
+                        }
+                    }
+                    Text(L10n.t("server_entry_hint"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 if !discovered.isEmpty {
                     Section(L10n.t("discovered_servers")) {
@@ -144,13 +178,13 @@ struct ServerPickerSheet: View {
                 Button(L10n.t("cancel")) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button(L10n.t("apply")) {
-                    let url = serverURL
+                    guard let url = resolvedServerURL else { return }
                     Task { await vm.changeServer(to: url) }
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accent)
-                .disabled(vm.isRunning || serverURL.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(vm.isRunning || resolvedServerURL == nil)
                 .keyboardShortcut(.defaultAction)
             }
             .padding(10)

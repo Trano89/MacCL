@@ -11,10 +11,19 @@ struct Sidebar: View {
     @State private var newGroupName = ""
     @State private var groupTarget: ConversationSummary?
 
+    /// One formatter per language — building one per row per render is the
+    /// classic hidden cost of sidebar scrolling.
+    private static var formatters: [String: RelativeDateTimeFormatter] = [:]
+
     private func relativeDate(_ date: Date) -> String {
-        let f = RelativeDateTimeFormatter()
-        f.locale = Locale(identifier: settings.language.rawValue)
-        f.unitsStyle = .abbreviated
+        let lang = settings.language.rawValue
+        let f = Self.formatters[lang] ?? {
+            let f = RelativeDateTimeFormatter()
+            f.locale = Locale(identifier: lang)
+            f.unitsStyle = .abbreviated
+            Self.formatters[lang] = f
+            return f
+        }()
         return f.localizedString(for: date, relativeTo: Date())
     }
 
@@ -36,11 +45,14 @@ struct Sidebar: View {
                     )
 
                 VStack(alignment: .leading, spacing: 2) {
+                    // Adaptive in both schemes: white-on-translucent-accent was
+                    // unreadable in clair with the paler accents (ambre, cyan).
                     Text(summary.title)
-                        .foregroundStyle(isActive ? .white : .primary)
+                        .fontWeight(isActive ? .semibold : .regular)
+                        .foregroundStyle(.primary)
                         .lineLimit(1)
                     Text(relativeDate(summary.updatedAt))
-                        .foregroundStyle(isActive ? Color.white.opacity(0.7) : .secondary)
+                        .foregroundStyle(.secondary)
                 }
 
                 Spacer()
@@ -50,7 +62,7 @@ struct Sidebar: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: Theme.corner)
-                    .fill(isActive ? Theme.accent.opacity(0.55) : Color.clear)
+                    .fill(isActive ? Theme.accent.opacity(0.20) : Color.clear)
             )
             .contentShape(Rectangle())
             .animation(.spring(response: 0.35, dampingFraction: 0.7, blendDuration: 0.2), value: isActive)
@@ -114,7 +126,9 @@ struct Sidebar: View {
                         Text(L10n.t("no_conversation"))
                             .foregroundStyle(.secondary)
                     } else {
-                        ForEach(ungrouped.prefix(40)) { summary in
+                        // No arbitrary cap: List rows are lazy, and a silent
+                        // prefix(40) made older conversations simply vanish.
+                        ForEach(ungrouped) { summary in
                             historyRow(summary)
                         }
                     }

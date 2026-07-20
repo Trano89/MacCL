@@ -1,26 +1,23 @@
 import SwiftUI
 
-/// Visual tokens tuned to feel close to the MacCL app — accent synced from UserDefaults.
+/// Visual tokens shared by every view. Semantic, adaptive by construction:
+/// everything derives from `Color.primary` or the accent, so clair, sombre et
+/// automatique come out right without a single hard-coded light/dark pair.
+@MainActor
 enum Theme {
-    /// Accent color read directly from UserDefaults so preference changes propagate everywhere.
-    static var accent: Color {
-        let hex = UserDefaults.standard.integer(forKey: "accentColorHex")
-        guard hex != 0 else { return Color(red: 0.85, green: 0.46, blue: 0.34) }
-        return Color(
-            red: Double((hex & 0xFF0000) >> 16) / 255.0,
-            green: Double((hex & 0x00FF00) >> 8) / 255.0,
-            blue: Double(hex & 0x0000FF) / 255.0
-        )
-    }
+    /// The user's accent — read from the single source of truth (AppSettings),
+    /// not from a parallel UserDefaults lookup that could drift from it.
+    static var accent: Color { AppSettings.shared.accentColor }
 
     static var accentSoft: Color { accent.opacity(0.14) }
 
-    static var userBubble: Color { Color.primary.opacity(0.06) }
+    static var userBubble: Color { accent.opacity(0.10) }
     static var card: Color { Color.primary.opacity(0.035) }
     static var hairline: Color { Color.primary.opacity(0.09) }
 
     static let corner: CGFloat = 14
-    static let contentMaxWidth: CGFloat = 740
+    /// Width of the reading column (transcript, reasoning, composer).
+    static let contentMaxWidth: CGFloat = 860
 }
 
 extension View {

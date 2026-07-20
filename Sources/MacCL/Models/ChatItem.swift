@@ -1,11 +1,11 @@
 import Foundation
 
 /// A rendered element in the conversation transcript.
-struct ChatItem: Identifiable, Codable {
+struct ChatItem: Identifiable, Codable, Equatable {
     let id: String
     var kind: Kind
 
-    enum Kind: Codable {
+    enum Kind: Codable, Equatable {
         case user(text: String, attachments: [Attachment])
         case assistantText(String)
         case thinking(String)
@@ -16,7 +16,7 @@ struct ChatItem: Identifiable, Codable {
 }
 
 /// A tool invocation and (once it arrives) its result.
-struct ToolActivity: Codable {
+struct ToolActivity: Codable, Equatable {
     let toolUseId: String
     let name: String
     let input: JSONValue
@@ -48,7 +48,7 @@ struct ToolActivity: Codable {
 }
 
 /// Terminal result of a turn.
-struct ResultInfo: Codable {
+struct ResultInfo: Codable, Equatable {
     let isError: Bool
     let text: String?
     let costUsd: Double?
@@ -57,8 +57,11 @@ struct ResultInfo: Codable {
 }
 
 /// A non-message status line (session start, engine errors, etc.).
-struct Notice: Codable {
+struct Notice: Codable, Equatable {
     enum Level: String, Codable { case info, warning, error }
     let level: Level
     let text: String
+    /// Long-form content kept out of the transcript — shown on demand (tooltip
+    /// + expandable). Optional so conversations saved before it existed decode.
+    var detail: String?
 }

@@ -2,17 +2,33 @@ import SwiftUI
 
 struct ToolCallView: View {
     let activity: ToolActivity
+    var onOpenAgent: ((String) -> Void)? = nil
     @State private var expanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            // The link into the agents panel: every Task card carries one, so a
+            // sub-agent is always one click from its instructions and progress.
+            if activity.name == "Task", let onOpenAgent {
+                Divider().padding(.horizontal, 12)
+                Button {
+                    onOpenAgent(activity.toolUseId)
+                } label: {
+                    Label(L10n.t("agent_open"), systemImage: "sidebar.right")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.accent)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+            }
             if expanded {
                 details
             }
         }
-        .background(Theme.card, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.hairline))
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.corner))
+        .overlay(RoundedRectangle(cornerRadius: Theme.corner).stroke(Theme.hairline))
         .padding(.leading, 38)
     }
 

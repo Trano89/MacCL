@@ -8,19 +8,11 @@ enum OllamaDiscovery {
 
     // MARK: - Types
 
-    struct Server: Identifiable, Hashable, Sendable {
+    struct Server: Identifiable, Hashable {
         var id: String { url }
         let url: String
         let host: String       // display host (e.g. "localhost" or "192.168.1.42")
         let modelCount: Int
-        var lastSeenDate: Date = .now
-
-        init(url: String, host: String, modelCount: Int) {
-            self.url = url
-            self.host = host
-            self.modelCount = modelCount
-            self.lastSeenDate = .now
-        }
 
         var standbyServer: StandbyServer {
             let displayName = (host == "localhost" || host == "127.0.0.1") ? "localhost" : host
@@ -35,8 +27,6 @@ enum OllamaDiscovery {
         private weak var delegate: ServerDiscoveryDelegate?
         // All servers found across all scans (keyed by URL).
         private(set) var discoveredServers: [String: Server] = [:]
-        private var lastScanDate: Date = .distantPast
-        private let staleThreshold: TimeInterval = 300  // 5 min
         private var isScanning = false
 
         init(interval: TimeInterval = 30, delegate: ServerDiscoveryDelegate?) {
@@ -80,22 +70,8 @@ enum OllamaDiscovery {
                     }
                 }
             }
-            // Prune stale entries (seen > 5 min ago) before updating with fresh scan.
-            let cutoff = Date().addingTimeInterval(-staleThreshold)
-            for key in discoveredServers.keys where discoveredServers[key]?.lastSeenDate ?? .distantPast < cutoff {
-                discoveredServers.removeValue(forKey: key)
-            }
-
-            // Merge new servers (refresh their last-seen timestamps).
-            for server in newServers {
-                if let existing = discoveredServers[server.url], existing.lastSeenDate != .distantPast {
-                    discoveredServers[server.url] = server  // refresh timestamp
-                } else {
-                    discoveredServers[server.url] = server
-                }
-            }
-
-            lastScanDate = Date()
+            // Update discovered servers list on the background task's actor.
+            discoveredServers = now
         }
     }
 
@@ -105,27 +81,37 @@ enum OllamaDiscovery {
         func didDiscoverServer(_ server: OllamaDiscovery.Server)
     }
 
-    // MARK: - Local IPv4 addresses
+    // MARK: - Local IPv4 interfaces
 
-    static func localIPv4Addresses() -> [String] {
-        var result: [String] = []
+    /// A local interface: IPv4 address plus the netmask that says how big its
+    /// network actually is. The mask is the whole point — guessing the subnet
+    /// instead of reading it is how a server at .45 stays invisible forever.
+    struct Interface {
+        let ip: UInt32
+        let mask: UInt32
+    }
+
+    static func localIPv4Interfaces() -> [Interface] {
+        var result: [Interface] = []
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return [] }
         defer { freeifaddrs(ifaddr) }
         var ptr: UnsafeMutablePointer<ifaddrs>? = first
         while let p = ptr {
             let ifa = p.pointee
-            if let sa = ifa.ifa_addr, sa.pointee.sa_family == UInt8(AF_INET) {
-                let name = String(cString: ifa.ifa_name)
-                if name != "lo0" {
-                    var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                    if getnameinfo(sa, socklen_t(sa.pointee.sa_len), &host,
-                                   socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
-                        let ip = String(cString: host)
-                        if !ip.isEmpty, !ip.hasPrefix("169.254"), !ip.hasPrefix("127.") {
-                            result.append(ip)
-                        }
-                    }
+            if let sa = ifa.ifa_addr, sa.pointee.sa_family == UInt8(AF_INET),
+               let sm = ifa.ifa_netmask, String(cString: ifa.ifa_name) != "lo0" {
+                let ip = sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) {
+                    UInt32(bigEndian: $0.pointee.sin_addr.s_addr)
+                }
+                let mask = sm.withMemoryRebound(to: sockaddr_in.self, capacity: 1) {
+                    UInt32(bigEndian: $0.pointee.sin_addr.s_addr)
+                }
+                // Skip loopback (127/8) and link-local self-assigned (169.254/16).
+                let firstOctet = ip >> 24
+                let isLinkLocal = (ip >> 16) == 0xA9FE
+                if firstOctet != 127, !isLinkLocal, mask != 0 {
+                    result.append(Interface(ip: ip, mask: mask))
                 }
             }
             ptr = ifa.ifa_next
@@ -133,23 +119,38 @@ enum OllamaDiscovery {
         return result
     }
 
+    static func ipString(_ v: UInt32) -> String {
+        "\((v >> 24) & 0xFF).\((v >> 16) & 0xFF).\((v >> 8) & 0xFF).\(v & 0xFF)"
+    }
+
+    /// Every usable host address on `iface`'s network, network and broadcast
+    /// excluded. A /16 (or wider) would mean 65k probes, so the sweep is capped
+    /// to the /24 around our own address — that's a home LAN in practice.
+    static func subnetHosts(_ iface: Interface) -> [String] {
+        let mask = max(iface.mask, 0xFFFFFF00 as UInt32)   // never wider than /24
+        let network = iface.ip & mask
+        let broadcast = network | ~mask
+        guard broadcast > network + 1 else { return [ipString(iface.ip)] }  // /31, /32
+        return ((network + 1)...(broadcast - 1)).map(ipString)
+    }
+
     // MARK: - Discovery
 
-    /// Probe localhost + the /28 of EVERY local interface + the configured host.
+    /// Probe localhost + every address on each local interface's own network +
+    /// the configured host. Reading the real netmask is what makes a server
+    /// anywhere on the LAN discoverable, not just the first sixteen addresses.
     static func discover(port: Int, configured: String) async -> [Server] {
         var targets = Set<String>(["127.0.0.1"])
         if let host = URLComponents(string: configured)?.host { targets.insert(host) }
-        for ip in localIPv4Addresses() {
-            let parts = ip.split(separator: ".")
-            if parts.count == 4 {
-                let prefix = parts.prefix(3).joined(separator: ".")
-                for i in 1...16 { targets.insert("\(prefix).\(i)") }
-            }
+        for iface in localIPv4Interfaces() {
+            targets.formUnion(subnetHosts(iface))
         }
 
         let hosts = Array(targets)
         var found: [Server] = []
-        let maxConcurrent = 32
+        // A /24 sweep is ~254 probes; most LAN hosts refuse instantly, only truly
+        // absent addresses cost the full timeout. Widen the fan-out to match.
+        let maxConcurrent = 64
         await withTaskGroup(of: Server?.self) { group in
             var index = 0
             while index < min(maxConcurrent, hosts.count) {

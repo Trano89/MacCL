@@ -34,8 +34,25 @@ struct AttachmentChip: View {
         .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.hairline))
     }
 
+    /// Downsampled thumbnails, keyed by file URL. Reading + decoding the full
+    /// image inside `body` re-hit the disk on every render — during streaming
+    /// that meant re-decoding a multi-MB photo per token.
+    private static let thumbnailCache = NSCache<NSURL, NSImage>()
+
+    private static func thumbnail(for url: URL) -> NSImage? {
+        if let hit = thumbnailCache.object(forKey: url as NSURL) { return hit }
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceThumbnailMaxPixelSize: 120,
+              ] as CFDictionary) else { return nil }
+        let img = NSImage(cgImage: cg, size: .zero)
+        thumbnailCache.setObject(img, forKey: url as NSURL)
+        return img
+    }
+
     @ViewBuilder private var thumbnail: some View {
-        if attachment.kind == .image, let image = NSImage(contentsOf: attachment.url) {
+        if attachment.kind == .image, let image = Self.thumbnail(for: attachment.url) {
             Image(nsImage: image)
                 .resizable()
                 .aspectRatio(contentMode: .fill)

@@ -5,9 +5,6 @@ import Foundation
 /// The protocol emits newline-delimited JSON objects discriminated by `type`.
 /// We decode leniently: unknown fields are ignored and unknown `type`s are
 /// preserved via the raw `type` string so the UI can surface them.
-/// P1 fix: Stream protocol v2 — added `protocolVersion` for backwards compatibility.
-/// Event types: system/init, assistant (with ContentBlock[]), user (with ContentBlock[]),
-/// result (with isError/cost/turns/duration), stream_event (delta), control_request.
 struct StreamEnvelope: Decodable {
     let type: String
     let subtype: String?
@@ -28,9 +25,7 @@ struct StreamEnvelope: Decodable {
 
     // result
     let isError: Bool?
-    /// May arrive as a plain string or as a structured object (e.g. {"text": "..."}).
-    /// JSONValue preserves both shapes; .unknown catches non-standard payloads.
-    let result: JSONValue?
+    let result: String?
     let totalCostUsd: Double?
     let numTurns: Int?
     let durationMs: Int?
@@ -70,9 +65,12 @@ struct AnthropicMessage: Decodable {
     let model: String?
     let content: [ContentBlock]?
     let stopReason: String?
+    /// Per-API-call token usage — present on every assistant event, which makes
+    /// it the live source for the context gauge (results only close the turn).
+    let usage: JSONValue?
 
     enum CodingKeys: String, CodingKey {
-        case role, model, content
+        case role, model, content, usage
         case stopReason = "stop_reason"
     }
 
@@ -81,6 +79,7 @@ struct AnthropicMessage: Decodable {
         role = try? c.decode(String.self, forKey: .role)
         model = try? c.decode(String.self, forKey: .model)
         stopReason = try? c.decode(String.self, forKey: .stopReason)
+        usage = try? c.decode(JSONValue.self, forKey: .usage)
         // `content` may be a plain string (user shorthand) or an array of blocks.
         if let blocks = try? c.decode([ContentBlock].self, forKey: .content) {
             content = blocks
@@ -128,11 +127,8 @@ enum ContentBlock: Decodable {
         }
     }
 
-    /// tool_result `content` can be a string, an array of `{type:text,text}`,
-    /// or (rarely) a bare "text" field at the top level.  Returns "".only when
-    /// the server truly sent nothing — not when it silently dropped data.
+    /// tool_result `content` can be a string or an array of `{type:text,text}`.
     private static func decodeContent(_ c: KeyedDecodingContainer<K>) -> String {
-        // Try known keys in order of prevalence.
         if let s = try? c.decode(String.self, forKey: .content) { return s }
         if let arr = try? c.decode([JSONValue].self, forKey: .content) {
             let parts = arr.compactMap { block -> String? in
@@ -144,9 +140,6 @@ enum ContentBlock: Decodable {
             }
             if !parts.isEmpty { return parts.joined(separator: "\n") }
         }
-        // Some implementations use a bare "text" key instead of "content".
-        if let v = try? c.decode(JSONValue.self, forKey: .text) { return v.pretty() }
-        // Last resort: any leftover JSONValue on the raw "content" key.
         if let v = try? c.decode(JSONValue.self, forKey: .content) { return v.pretty() }
         return ""
     }

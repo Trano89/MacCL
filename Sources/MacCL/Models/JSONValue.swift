@@ -10,9 +10,6 @@ enum JSONValue: Codable, Equatable, Hashable {
     case string(String)
     case array([JSONValue])
     case object([String: JSONValue])
-    /// Catch-all for unparseable payloads (used by protocol fields that may
-    /// arrive in non-standard shapes). Preserves the raw JSON Data for debug.
-    case unknown(Data)
 
     init(from decoder: Decoder) throws {
         let c = try decoder.singleValueContainer()
@@ -22,12 +19,7 @@ enum JSONValue: Codable, Equatable, Hashable {
         if let s = try? c.decode(String.self) { self = .string(s); return }
         if let a = try? c.decode([JSONValue].self) { self = .array(a); return }
         if let o = try? c.decode([String: JSONValue].self) { self = .object(o); return }
-        // Graceful fallback — preserve raw bytes instead of losing the value.
-        if let d = try? c.decode(Data.self) {
-            self = .unknown(d)
-        } else {
-            self = .unknown(Data())
-        }
+        throw DecodingError.dataCorruptedError(in: c, debugDescription: "Unsupported JSON value")
     }
 
     func encode(to encoder: Encoder) throws {
@@ -39,7 +31,6 @@ enum JSONValue: Codable, Equatable, Hashable {
         case .string(let s): try c.encode(s)
         case .array(let a): try c.encode(a)
         case .object(let o): try c.encode(o)
-        case .unknown(let d): try c.encode(d)
         }
     }
 }
@@ -53,29 +44,26 @@ extension JSONValue {
     var asString: String? {
         switch self {
         case .string(let s): return s
-        case .number(let n): return n == n.rounded() ? String(Int(n)) : String(n)
+        case .number(let n):
+            // Int(exactly:) instead of Int(n): the stream is external input, and
+            // Int(1e300) TRAPS — one absurd number from a model crashed the app.
+            if let i = Int(exactly: n.rounded()), n == n.rounded() { return String(i) }
+            return String(n)
         case .bool(let b): return String(b)
-        case .unknown(let d): return String(data: d, encoding: .utf8)
         default: return nil
         }
     }
 
-    var asNumber: Double? {
-        switch self {
-        case .number(let n): return n
-        case .string(let s): return Double(s)
-        case .bool(let b): return b ? 1.0 : 0.0
-        default: return nil
-        }
+    /// The value as an Int when it is a (finite, in-range) number.
+    var asInt: Int? {
+        if case .number(let n) = self { return Int(exactly: n.rounded()) }
+        return nil
     }
 
     var asObject: [String: JSONValue]? {
         if case .object(let o) = self { return o }
         return nil
     }
-
-    /// Raw preserved bytes (only non-nil for .unknown payloads).
-    var raw: Data? { if case .unknown(let d) = self { return d } else { return nil } }
 
     /// Human-readable multi-line rendering for tool inputs / debug panes.
     func pretty() -> String {
@@ -84,9 +72,6 @@ extension JSONValue {
         case .null: return "null"
         case .bool(let b): return String(b)
         case .number(let n): return n == n.rounded() ? String(Int(n)) : String(n)
-        case .unknown(let d):
-            if let s = String(data: d, encoding: .utf8) { return s }
-            return "<\(d.count)-byte binary payload>"
         default:
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]

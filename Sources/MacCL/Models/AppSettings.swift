@@ -30,32 +30,33 @@ final class AppSettings: ObservableObject {
             if validated != oldValue { defaults.set(validated, forKey: "ollamaBaseURL") }
         }
     }
-    /// Local Anthropic→Ollama router port.
-    /// Which bridge translates Claude Code's Anthropic API into Ollama calls.
-    @Published var bridgeEngineRaw: String {
-        didSet { defaults.set(bridgeEngineRaw, forKey: "bridgeEngineRaw") }
+    /// Cap on a single reply's output tokens (CLAUDE_CODE_MAX_OUTPUT_TOKENS).
+    /// The CLI's own default is 32k; a long agentic turn hits it and dies mid-way
+    /// ("response exceeded the … output token maximum"), so the app raises it —
+    /// and now lets you raise it further.
+    @Published var maxOutputTokens: Int {
+        didSet { defaults.set(maxOutputTokens, forKey: "maxOutputTokens") }
     }
-    /// Port for the LiteLLM proxy (kept separate from the built-in router's).
-    @Published var litellmPort: Int {
-        didSet { defaults.set(litellmPort, forKey: "litellmPort") }
+    /// Diagnostic verbosity of the log file (off … trace).
+    @Published var logLevelRaw: String {
+        didSet {
+            defaults.set(logLevelRaw, forKey: "logLevel")
+            AppLog.level = AppLog.Level(rawValue: logLevelRaw) ?? .warn
+        }
     }
-    @Published var routerPort: Int {
-        didSet { defaults.set(routerPort, forKey: "routerPort") }
-    }
-    /// Context window (num_ctx) for local models. Bounds the KV-cache RAM.
-    @Published var ollamaNumCtx: Int {
-        didSet { defaults.set(ollamaNumCtx, forKey: "ollamaNumCtx") }
-    }
-    /// Max output tokens (num_predict) for local models. 0 = follow Claude Code,
-    /// -1 = unlimited (generate until stop / context full).
-    @Published var ollamaMaxPredict: Int {
-        didSet { defaults.set(ollamaMaxPredict, forKey: "ollamaMaxPredict") }
+    /// Mirror diagnostics to stderr as well as the log file.
+    @Published var diagnosticConsoleEnabled: Bool {
+        didSet {
+            defaults.set(diagnosticConsoleEnabled, forKey: "diagnosticConsoleEnabled")
+            AppLog.consoleEnabled = diagnosticConsoleEnabled
+        }
     }
     @Published var streamPartialMessages: Bool {
         didSet { defaults.set(streamPartialMessages, forKey: "streamPartialMessages") }
     }
-    /// Show the model's reasoning. For local models this enables Ollama thinking
-    /// via the router (`--think`); for Anthropic models thinking follows --effort.
+    /// Show the model's reasoning in the transcript. Thinking itself follows
+    /// `--effort` for every provider now — Ollama honours the Messages API's
+    /// `thinking` field the same way Anthropic does.
     @Published var showReasoning: Bool {
         didSet { defaults.set(showReasoning, forKey: "showReasoning") }
     }
@@ -75,34 +76,22 @@ final class AppSettings: ObservableObject {
     @Published var standbyServersRaw: String {
         didSet { defaults.set(standbyServersRaw, forKey: "standbyServers") }
     }
-    /// Logging severity (off / error / warn / info / debug). default = .warn.
-    @Published var logLevelRaw: String {
-        didSet {
-            defaults.set(logLevelRaw, forKey: "logLevel")
-            AppLog.level = AppLog.Level(rawValue: logLevelRaw) ?? .warn
-        }
-    }
-    /// Whether diagnostic logs are also emitted to stderr (Xcode console).
-    @Published var diagnosticConsoleEnabled: Bool {
-        didSet {
-            defaults.set(diagnosticConsoleEnabled, forKey: "diagnosticConsoleEnabled")
-            AppLog.consoleEnabled = diagnosticConsoleEnabled
-        }
-    }
-
-    /// Computed log level from the persisted raw string. */
-    var logLevel: AppLog.Level {
-        get { AppLog.Level(rawValue: logLevelRaw) ?? .warn }
-        set { logLevelRaw = newValue.rawValue }
-    }
-    /// Whether the workspace panel should be shown by default.
-    @Published var showWorkspaceRaw: Bool {
-        didSet { defaults.set(showWorkspaceRaw, forKey: "showWorkspace") }
-    }
 
     private let defaults = UserDefaults.standard
 
+    /// One-shot migration: the bundle id moved from com.antonin.maccl to
+    /// com.trano89.maccl, and UserDefaults are keyed by bundle id — without
+    /// this, every preference (theme, accent, servers, model…) would silently
+    /// reset on first launch under the new identity.
+    private static func migrateLegacyDefaultsIfNeeded(into defaults: UserDefaults) {
+        guard defaults.object(forKey: "selectedModelId") == nil,
+              let old = defaults.persistentDomain(forName: "com.antonin.maccl"),
+              !old.isEmpty else { return }
+        for (key, value) in old { defaults.set(value, forKey: key) }
+    }
+
     private init() {
+        Self.migrateLegacyDefaultsIfNeeded(into: defaults)
         claudePathOverride = defaults.string(forKey: "claudePathOverride") ?? ""
         workingDirectory = defaults.string(forKey: "workingDirectory")
             ?? FileManager.default.homeDirectoryForCurrentUser.path
@@ -111,20 +100,16 @@ final class AppSettings: ObservableObject {
             ?? PermissionMode.bypassPermissions.rawValue
         effortLevelRaw = defaults.string(forKey: "effortLevelRaw") ?? EffortLevel.high.rawValue
         ollamaBaseURL = defaults.string(forKey: "ollamaBaseURL") ?? "http://localhost:11434"
-        routerPort = defaults.integer(forKey: "routerPort") == 0 ? 8787 : max(1024, min(65535, defaults.integer(forKey: "routerPort")))
-        bridgeEngineRaw = defaults.string(forKey: "bridgeEngineRaw") ?? BridgeEngine.builtin.rawValue
-        litellmPort = defaults.integer(forKey: "litellmPort") == 0 ? 4000 : max(1024, min(65535, defaults.integer(forKey: "litellmPort")))
-        ollamaNumCtx = defaults.integer(forKey: "ollamaNumCtx") == 0 ? 16384 : defaults.integer(forKey: "ollamaNumCtx")
-        ollamaMaxPredict = defaults.object(forKey: "ollamaMaxPredict") as? Int ?? 0
+        maxOutputTokens = defaults.integer(forKey: "maxOutputTokens") == 0
+            ? 64_000 : max(8_000, min(512_000, defaults.integer(forKey: "maxOutputTokens")))
+        logLevelRaw = defaults.string(forKey: "logLevel") ?? AppLog.Level.warn.rawValue
+        diagnosticConsoleEnabled = defaults.bool(forKey: "diagnosticConsoleEnabled")
         streamPartialMessages = defaults.object(forKey: "streamPartialMessages") as? Bool ?? true
         showReasoning = defaults.object(forKey: "showReasoning") as? Bool ?? true
         languageRaw = defaults.string(forKey: "languageRaw") ?? AppLanguage.systemDefault.rawValue
         appearanceThemeRaw = defaults.string(forKey: "appearanceThemeRaw") ?? "system"
         accentColorHex = defaults.integer(forKey: "accentColorHex") == 0 ? 0xE37654 : defaults.integer(forKey: "accentColorHex")
         standbyServersRaw = defaults.string(forKey: "standbyServers") ?? "[]"
-        showWorkspaceRaw = defaults.object(forKey: "showWorkspace") as? Bool ?? false
-        logLevelRaw = defaults.string(forKey: "logLevel") ?? AppLog.Level.warn.rawValue
-        diagnosticConsoleEnabled = defaults.bool(forKey: "diagnosticConsoleEnabled")
     }
 
     var language: AppLanguage {
@@ -135,6 +120,11 @@ final class AppSettings: ObservableObject {
     var permissionMode: PermissionMode {
         get { PermissionMode(rawValue: permissionModeRaw) ?? .bypassPermissions }
         set { permissionModeRaw = newValue.rawValue }
+    }
+
+    var logLevel: AppLog.Level {
+        get { AppLog.Level(rawValue: logLevelRaw) ?? .warn }
+        set { logLevelRaw = newValue.rawValue }
     }
 
     var effortLevel: EffortLevel {
@@ -194,11 +184,4 @@ final class AppSettings: ObservableObject {
         standbyServers.removeAll { $0.id == id }
     }
 
-    var routerBaseURL: String { "http://127.0.0.1:\(routerPort)" }
-    var litellmBaseURL: String { "http://127.0.0.1:\(litellmPort)" }
-
-    var bridgeEngine: BridgeEngine {
-        get { BridgeEngine(rawValue: bridgeEngineRaw) ?? .builtin }
-        set { bridgeEngineRaw = newValue.rawValue }
-    }
 }

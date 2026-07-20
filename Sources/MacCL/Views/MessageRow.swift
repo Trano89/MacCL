@@ -1,7 +1,13 @@
 import SwiftUI
 
-struct MessageRow: View {
+struct MessageRow: View, Equatable {
     let item: ChatItem
+    /// Called with the Task toolUseId when the user clicks a sub-agent link.
+    /// Excluded from Equatable on purpose — identity of the closure never
+    /// changes what the row displays.
+    var onOpenAgent: ((String) -> Void)? = nil
+
+    static func == (lhs: MessageRow, rhs: MessageRow) -> Bool { lhs.item == rhs.item }
 
     var body: some View {
         switch item.kind {
@@ -12,7 +18,7 @@ struct MessageRow: View {
         case .thinking(let text):
             ThinkingBlock(text: text)
         case .tool(let activity):
-            ToolCallView(activity: activity)
+            ToolCallView(activity: activity, onOpenAgent: onOpenAgent)
         case .result(let info):
             ResultFooter(info: info)
         case .notice(let notice):
@@ -130,18 +136,47 @@ private struct ResultFooter: View {
 
 private struct NoticeBanner: View {
     let notice: Notice
+    @State private var expanded = false
+
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: icon)
-                .foregroundStyle(color)
-            Text(verbatim: notice.text)
-                .font(notice.text.hasPrefix("$") ? .system(.body, design: .monospaced) : .body)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: icon)
+                    .foregroundStyle(color)
+                Text(verbatim: notice.text)
+                    .font(notice.text.hasPrefix("$") ? .system(.body, design: .monospaced) : .body)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if notice.detail != nil {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() }
+                    } label: {
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(L10n.t(expanded ? "collapse" : "expand"))
+                }
+            }
+            if expanded, let detail = notice.detail {
+                ScrollView(.horizontal) {
+                    Text(verbatim: detail)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                }
+                .padding(8)
+                .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+            }
         }
         .padding(12)
-        .background(color.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(color.opacity(0.25)))
+        // Info notices wear the SAME quiet card as tool calls — one visual
+        // family for everything that isn't a chat message. Only warnings and
+        // errors are allowed to raise their voice.
+        .background(background, in: RoundedRectangle(cornerRadius: Theme.corner))
+        .overlay(RoundedRectangle(cornerRadius: Theme.corner).stroke(border))
+        // The infobulle: hover shows the full command without expanding.
+        .help(notice.detail ?? notice.text)
     }
 
     private var icon: String {
@@ -153,9 +188,23 @@ private struct NoticeBanner: View {
     }
     private var color: Color {
         switch notice.level {
-        case .info: return .blue
+        case .info: return .secondary
         case .warning: return .orange
         case .error: return .red
+        }
+    }
+    private var background: Color {
+        switch notice.level {
+        case .info: return Theme.card
+        case .warning: return .orange.opacity(0.08)
+        case .error: return .red.opacity(0.08)
+        }
+    }
+    private var border: Color {
+        switch notice.level {
+        case .info: return Theme.hairline
+        case .warning: return .orange.opacity(0.25)
+        case .error: return .red.opacity(0.25)
         }
     }
 }

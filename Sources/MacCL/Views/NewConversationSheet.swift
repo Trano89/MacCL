@@ -25,6 +25,11 @@ struct NewConversationSheet: View {
     private var allModels: [LLMModel] { LLMModel.anthropicCatalog + serverModels }
     private var model: LLMModel? { allModels.first { $0.id == modelId } }
 
+    /// What the typed address actually resolves to — `192.168.1.20` becomes
+    /// `http://192.168.1.20:11434`. nil while the text can't be made into a
+    /// server address. Everything downstream uses this, never the raw field.
+    private var resolvedServerURL: String? { URLValidator.sanitizeAndValidate(serverURL) }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -110,10 +115,13 @@ struct NewConversationSheet: View {
             effort = settings.effortLevel
             convInstructions = vm.conversationInstructions
             Task { await scan() }
-            Task { await loadModels() }
         }
-        .onChange(of: serverURL) { _, _ in
-            Task { await loadModels() }
+        // Keyed task: each edit cancels the previous lookup, so a slow reply from
+        // the address you just replaced can't overwrite the current one's models.
+        .task(id: serverURL) {
+            try? await Task.sleep(nanoseconds: 350_000_000)   // settle while typing
+            guard !Task.isCancelled else { return }
+            await loadModels()
         }
     }
 
@@ -121,8 +129,15 @@ struct NewConversationSheet: View {
     private var serverSection: some View {
         Section(L10n.t("conv_server")) {
             HStack(spacing: 8) {
-                TextField("http://192.168.1.10:11434", text: $serverURL)
+                TextField("192.168.1.10", text: $serverURL)
                     .font(.system(.body, design: .monospaced))
+                    .onSubmit { if let r = resolvedServerURL { serverURL = r } }
+                if !serverURL.isEmpty {
+                    Image(systemName: resolvedServerURL == nil
+                          ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
+                        .foregroundStyle(resolvedServerURL == nil ? .orange : .green)
+                        .help(resolvedServerURL ?? L10n.t("invalid_ollama_url"))
+                }
                 Button {
                     Task { await scan() }
                 } label: {
@@ -134,6 +149,9 @@ struct NewConversationSheet: View {
                 }
                 .disabled(scanning)
             }
+            Text(L10n.t("server_entry_hint"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
             ForEach(discovered) { server in
                 Button {
                     serverURL = server.url
@@ -166,33 +184,47 @@ struct NewConversationSheet: View {
 
     private func scan() async {
         scanning = true
-        discovered = await OllamaDiscovery.discover(port: 11434, configured: serverURL)
+        discovered = await OllamaDiscovery.discover(port: URLValidator.defaultOllamaPort,
+                                                    configured: resolvedServerURL ?? "")
         scanning = false
     }
 
     private func loadModels() async {
+        guard let url = resolvedServerURL else { serverModels = []; return }
         loadingModels = true
-        serverModels = await OllamaClient.listModels(baseURL: serverURL)
+        let models = await OllamaClient.listModels(baseURL: url)
+        guard !Task.isCancelled else { return }   // a newer keystroke owns the field now
+        serverModels = models
         loadingModels = false
         // Keep the selection valid for THIS server.
         if !allModels.contains(where: { $0.id == modelId }) {
-            modelId = serverModels.first?.id ?? LLMModel.anthropicCatalog.first!.id
+            modelId = serverModels.first?.id ?? LLMModel.anthropicCatalog.first?.id ?? "anthropic:opus"
         }
     }
 
     private var commandPreview: String {
-        let m = model
+        guard let m = model else { return "" }
+        // Same builders as the real spawn (SessionConfig + ModelRouter), so the
+        // preview can never drift from what actually executes.
         var env = ""
-        if m?.provider == .ollama {
-            env = "ANTHROPIC_BASE_URL=\(settings.routerBaseURL) ANTHROPIC_MODEL=\(m?.modelArg ?? "?") "
-            env = "# pont → \(serverURL)\n" + env
+        if m.provider != .anthropic {
+            env = ModelRouter.shared
+                .environment(for: m, serverURL: resolvedServerURL ?? serverURL)
+                .sorted { $0.key < $1.key }
+                .map { "\($0.key)=\($0.value)" }
+                .joined(separator: " ") + " "
         }
-        var cmd = "claude -p --input-format stream-json --output-format stream-json --verbose"
-        cmd += " --model \(m?.modelArg ?? "?")"
-        cmd += " --permission-mode \(permission.cliValue)"
-        cmd += " --effort \(effort.cliValue)"
-        if settings.streamPartialMessages { cmd += " --include-partial-messages" }
-        return "cd \"\(workingDirectory)\"\n\(env)\(cmd)"
+        let config = SessionConfig(
+            claudePath: "claude", workingDirectory: workingDirectory, model: m,
+            permissionMode: permission, effort: effort,
+            appendSystemPrompt: convInstructions,
+            streamPartial: settings.streamPartialMessages, sessionId: "<uuid>",
+            maxOutputTokens: settings.maxOutputTokens)
+        let cmd = "claude " + config.cliArguments(resume: false, forDisplay: true)
+            .joined(separator: " ")
+        // Two-step launch, like a human at a terminal: minimal command first,
+        // then the session-level tuning sent as in-band slash commands.
+        return "cd \"\(workingDirectory)\"\n\(env)\(cmd)\n> /effort \(effort.cliValue)"
     }
 
     private func displayPath(_ path: String) -> String {
@@ -212,15 +244,23 @@ struct NewConversationSheet: View {
     }
 
     private func start() {
+        // Bind to the resolved address, never the raw text: the conversation must
+        // record where it actually talks, not what happened to be typed.
+        let server = resolvedServerURL ?? settings.ollamaBaseURL
         settings.selectedModelId = modelId
         settings.workingDirectory = workingDirectory
         settings.permissionMode = permission
         settings.effortLevel = effort
-        settings.ollamaBaseURL = serverURL          // seed for the next sheet
+        settings.ollamaBaseURL = server             // seed for the next sheet
         vm.newConversation()
-        vm.conversationServerURL = serverURL        // this conversation's own server
+        vm.conversationServerURL = server           // this conversation's own server
         vm.conversationInstructions = convInstructions // after reset, applies to this conversation
         Task { await vm.refreshModels() }
+        // Preload the chosen model while the user types their first message —
+        // by send time the cold load is already paid (or well underway).
+        if let m = model, m.provider != .anthropic {
+            Task.detached { await OllamaClient.warmUp(model: m.modelArg, baseURL: server) }
+        }
         dismiss()
     }
 }
