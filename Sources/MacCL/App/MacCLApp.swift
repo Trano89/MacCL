@@ -6,6 +6,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The app owns no server-side state to release on quit: `claude` talks
         // straight to Ollama, and how long a model stays resident is the server's
         // own OLLAMA_KEEP_ALIVE. Nothing to unload, nothing to leak.
+        //
+        // Reclaim disk from the retired LiteLLM bridge (a Python venv left over
+        // from older versions). Off the main thread — it's hundreds of MB.
+        Task.detached(priority: .utility) { AppPaths.removeRetiredLiteLLMLeftovers() }
     }
 }
 

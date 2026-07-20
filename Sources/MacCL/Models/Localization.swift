@@ -73,7 +73,6 @@ enum L10n {
         "default_permission": ("Mode de permission par défaut", "Default permission mode", "Standard-Berechtigungsmodus", "Modo de permissão padrão", "Modo de permiso predeterminado"),
         "scan": ("Scanner", "Scan", "Scannen", "Procurar", "Escanear"),
         "models_count": ("modèle(s)", "model(s)", "Modell(e)", "modelo(s)", "modelo(s)"),
-        // Bridge engine / LiteLLM
         "show_reasoning": ("Afficher les réflexions du modèle", "Show the model's reasoning", "Denkprozess des Modells anzeigen", "Mostrar o raciocínio do modelo", "Mostrar el razonamiento del modelo"),
         "reasoning_hint": ("Affiche le raisonnement du modèle sous la conversation. Sa profondeur suit le niveau d'effort choisi, pour les modèles Anthropic comme pour Ollama.", "Shows the model's reasoning under the conversation. Its depth follows the chosen effort level, for Anthropic and Ollama models alike.", "Zeigt das Denken des Modells unter der Unterhaltung. Seine Tiefe folgt der gewählten Effort-Stufe — für Anthropic- wie für Ollama-Modelle.", "Mostra o raciocínio do modelo sob a conversa. A profundidade segue o nível de esforço escolhido, tanto para modelos Anthropic como Ollama.", "Muestra el razonamiento del modelo bajo la conversación. Su profundidad sigue el nivel de esfuerzo elegido, tanto para modelos Anthropic como Ollama."),
         "about": ("À propos", "About", "Über", "Sobre", "Acerca de"),
