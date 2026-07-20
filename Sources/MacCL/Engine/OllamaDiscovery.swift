@@ -8,11 +8,19 @@ enum OllamaDiscovery {
 
     // MARK: - Types
 
-    struct Server: Identifiable, Hashable {
+    struct Server: Identifiable, Hashable, Sendable {
         var id: String { url }
         let url: String
         let host: String       // display host (e.g. "localhost" or "192.168.1.42")
         let modelCount: Int
+        var lastSeenDate: Date = .now
+
+        init(url: String, host: String, modelCount: Int) {
+            self.url = url
+            self.host = host
+            self.modelCount = modelCount
+            self.lastSeenDate = .now
+        }
 
         var standbyServer: StandbyServer {
             let displayName = (host == "localhost" || host == "127.0.0.1") ? "localhost" : host
@@ -27,6 +35,8 @@ enum OllamaDiscovery {
         private weak var delegate: ServerDiscoveryDelegate?
         // All servers found across all scans (keyed by URL).
         private(set) var discoveredServers: [String: Server] = [:]
+        private var lastScanDate: Date = .distantPast
+        private let staleThreshold: TimeInterval = 300  // 5 min
         private var isScanning = false
 
         init(interval: TimeInterval = 30, delegate: ServerDiscoveryDelegate?) {
@@ -70,8 +80,22 @@ enum OllamaDiscovery {
                     }
                 }
             }
-            // Update discovered servers list on the background task's actor.
-            discoveredServers = now
+            // Prune stale entries (seen > 5 min ago) before updating with fresh scan.
+            let cutoff = Date().addingTimeInterval(-staleThreshold)
+            for key in discoveredServers.keys where discoveredServers[key]?.lastSeenDate ?? .distantPast < cutoff {
+                discoveredServers.removeValue(forKey: key)
+            }
+
+            // Merge new servers (refresh their last-seen timestamps).
+            for server in newServers {
+                if let existing = discoveredServers[server.url], existing.lastSeenDate != .distantPast {
+                    discoveredServers[server.url] = server  // refresh timestamp
+                } else {
+                    discoveredServers[server.url] = server
+                }
+            }
+
+            lastScanDate = Date()
         }
     }
 

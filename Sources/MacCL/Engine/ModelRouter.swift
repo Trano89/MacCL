@@ -139,16 +139,7 @@ final class ModelRouter {
     /// Called on app quit: unload the models we loaded — each from its own
     /// server — then stop the router. Models stay resident (keep_alive:-1)
     /// while the app runs; this is the only place they're released.
-    func cleanupOnQuit() {
-        pinger.stop()
-        for used in usedModels {
-            unloadSync(model: used.model, baseURL: used.serverURL)
-        }
-        proxy.stop()
-        litellm.stop()
-    }
-
-    private func unloadSync(model: String, baseURL: String) {
+    private func unloadModelAsync(model: String, baseURL: String) async {
         let base = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
         guard let url = URL(string: base + "/api/generate") else { return }
         var req = URLRequest(url: url)
@@ -156,8 +147,36 @@ final class ModelRouter {
         req.timeoutInterval = 1.5
         req.setValue("application/json", forHTTPHeaderField: "content-type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["model": model, "keep_alive": 0])
-        let sem = DispatchSemaphore(value: 0)
-        URLSession.shared.dataTask(with: req) { _, _, _ in sem.signal() }.resume()
-        _ = sem.wait(timeout: .now() + 2)
+
+        // FIX P0 #1: Replace synchronous DispatchSemaphore with async continuation
+        // so we never block the main thread. The old code could freeze the entire app
+        // for 2s per unloaded model when the Ollama server was unreachable.
+        do {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                URLSession.shared.dataTask(with: req) { _, response, error in
+                    if let error = error {
+                        cont.resume(throwing: error)
+                    } else if (response as? HTTPURLResponse)?.statusCode == 200 {
+                        cont.resume(returning: ())
+                    } else {
+                        cont.resume(throwing: NSError(domain: "RouterProcess", code: 502, userInfo: [NSLocalizedDescriptionKey: "Unexpected response"]))
+                    }
+                }.resume()
+            }
+        } catch {
+            AppLog.write("router", "unload model '\(model)' failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Called on app quit: unload the models we loaded — each from its own
+    /// server — then stop the router. Models stay resident (keep_alive:-1)
+    /// while the app runs; this is the only place they're released.
+    func cleanupOnQuitAsync() async {
+        pinger.stop()
+        for used in usedModels {
+            await unloadModelAsync(model: used.model, baseURL: used.serverURL)
+        }
+        proxy.stop()
+        litellm.stop()
     }
 }

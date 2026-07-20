@@ -433,9 +433,21 @@ function extractToolCalls(text, toolNames) {
   consider(text.trim())                                             // whole content is JSON
   let m
   const tagRe = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g
-  while ((m = tagRe.exec(text))) consider(m[1])                     // <tool_call>…</tool_call>
+  while ((m = tagRe.exec(text))) {
+    const parsed = typeof m[1] === 'string' ? safeParse(m[1]) : m[1]
+    if (parsed && typeof parsed === 'object' && parsed.name && toolNames.has(parsed.name) &&
+          (parsed.arguments ?? parsed.parameters ?? parsed.input ?? parsed.function)) {
+      consider(parsed)
+    }
+  }
   const fenceRe = /```(?:json|tool_call)?\s*([\s\S]*?)```/g
-  while ((m = fenceRe.exec(text))) consider(m[1])                   // ```json … ```
+  while ((m = fenceRe.exec(text))) {
+    const parsed = typeof m[1] === 'string' ? safeParse(m[1]) : m[1]
+    if (parsed && typeof parsed === 'object' && parsed.name && toolNames.has(parsed.name) &&
+          (parsed.arguments ?? parsed.parameters ?? parsed.input ?? parsed.function)) {
+      consider(parsed)
+    }
+  }
   return calls
 }
 

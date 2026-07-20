@@ -44,6 +44,7 @@ final class KeepAlivePinger {
                 let err = await self.pingOnce(url: u)
                 if let e = err {
                     self.lastPingError = e
+                    AppLog.error("keepalive", "ping failed: \(e)")
                 } else {
                     self.lastPingError = nil  // reset on success
                 }

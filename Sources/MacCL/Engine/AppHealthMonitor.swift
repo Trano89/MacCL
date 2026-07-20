@@ -12,7 +12,7 @@ final class AppHealthMonitor {
 
     /// Number of consecutive failed health checks before we trigger a full heal.
     private var failCount = 0
-    private let healThreshold = 2                  // fail twice → heal once
+    private let healThreshold = 4                  // fail four times → heal once
     private var isHealing = false
     private var isAppBackgrounded = false
     /// Consecutive failed restarts, and the earliest time we may try again.
@@ -70,7 +70,9 @@ final class AppHealthMonitor {
                 failCount = 0
                 return
             }
+            let checkEpoch = delegate?.currentSessionEpoch ?? .init()
             AppLog.write("health", "bridge process died mid-turn — turn is lost, notifying")
+            AppLog.write("health", "bridge process died mid-turn — discarding stale epoch \(checkEpoch)")
             delegate?.turnBrokenByBridgeDeath()
         }
         // Anthropic models talk straight to the API: there is no bridge to probe,
@@ -137,10 +139,13 @@ protocol HealthDelegate: AnyObject {
     func restartBridge() async -> String?
     /// The bridge process died while a turn was in flight: the turn is lost.
     /// End it visibly instead of letting "working…" run forever.
+    /// `epoch` must match the current sessionEpoch when verified — stale callbacks drop.
     func turnBrokenByBridgeDeath()
     /// True while a turn is in flight. Restarting the router mid-turn kills the
     /// in-flight request and leaves `claude` hanging forever, so healing must wait.
     var isTurnInFlight: Bool { get }
     /// True only when the selected model goes through a local bridge.
     var usesBridge: Bool { get }
+    /// Current session epoch — used to reject stale health callbacks.
+    var currentSessionEpoch: UUID { get }
 }

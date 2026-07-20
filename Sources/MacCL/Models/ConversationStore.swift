@@ -68,7 +68,11 @@ final class ConversationStore: ObservableObject {
     func save(_ conversation: Conversation) {
         let url = AppPaths.conversations.appendingPathComponent("\(conversation.id).json")
         if let data = try? encoder.encode(conversation) {
-            try? data.write(to: url, options: .atomic)
+            do {
+                try data.write(to: url, options: .atomic)
+            } catch {
+                AppLog.error("store", "save failed for \(conversation.id): \(error.localizedDescription)")
+            }
         }
         reload()
     }

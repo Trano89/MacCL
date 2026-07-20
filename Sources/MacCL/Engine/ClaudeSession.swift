@@ -72,10 +72,20 @@ final class ClaudeSession {
     }
 
     func stop() {
-        // Clear readability handlers to prevent old-session callbacks from firing.
+        // 1) Remove readability handlers first — prevents new callbacks from being queued.
         stdoutHandle?.readabilityHandler = nil
         stderrHandle?.readabilityHandler = nil
+        // 2) Clear the session's own property references so nothing can fire after this.
+        let prevStdout = stdoutHandle
+        let prevStderr = stderrHandle
+        let prevStdin = stdinPipe
+        stdoutHandle = nil
+        stderrHandle = nil
+        stdinPipe = nil
+        // 3) Clear buffered data (already-flowing bytes are stale).
         stdoutBuffer.removeAll()
+        // 4) Terminate the process — it will run its own terminationHandler which
+        //    also nils local handle copies, but those are now our dead copies.
         process?.terminate()
         process = nil
     }

@@ -8,6 +8,8 @@ struct SettingsView: View {
         TabView {
             GeneralTab()
                 .tabItem { Label("Général", systemImage: "gearshape") }
+            DiagnosticDashboardView()
+                .tabItem { Label("Diagnostics", systemImage: "chart.line.uptrend.xyaxis") }
             AppearanceTab()
                 .tabItem { Label("Apparence", systemImage: "swatchpalette") }
             AboutTab()

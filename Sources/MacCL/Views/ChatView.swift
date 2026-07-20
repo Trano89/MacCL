@@ -67,7 +67,9 @@ struct ChatView: View {
                 .readingColumn()
             }
             .frame(maxHeight: .infinity, alignment: .bottom)
-            .onChange(of: vm.items.count) { _, _ in
+            // Use itemsToken (batched by ChatViewModel) instead of items.count
+            // to avoid a scroll recalc on every streaming append.
+            .onChange(of: vm.itemsToken) { _, _ in
                 withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }
             }
             .onChange(of: vm.isRunning) { _, _ in

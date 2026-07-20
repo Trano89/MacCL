@@ -12,7 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         Task { @MainActor in
-            ModelRouter.shared.cleanupOnQuit()
+            await ModelRouter.shared.cleanupOnQuitAsync()
         }
     }
 }

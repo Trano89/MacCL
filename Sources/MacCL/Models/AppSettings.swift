@@ -75,6 +75,26 @@ final class AppSettings: ObservableObject {
     @Published var standbyServersRaw: String {
         didSet { defaults.set(standbyServersRaw, forKey: "standbyServers") }
     }
+    /// Logging severity (off / error / warn / info / debug). default = .warn.
+    @Published var logLevelRaw: String {
+        didSet {
+            defaults.set(logLevelRaw, forKey: "logLevel")
+            AppLog.level = AppLog.Level(rawValue: logLevelRaw) ?? .warn
+        }
+    }
+    /// Whether diagnostic logs are also emitted to stderr (Xcode console).
+    @Published var diagnosticConsoleEnabled: Bool {
+        didSet {
+            defaults.set(diagnosticConsoleEnabled, forKey: "diagnosticConsoleEnabled")
+            AppLog.consoleEnabled = diagnosticConsoleEnabled
+        }
+    }
+
+    /// Computed log level from the persisted raw string. */
+    var logLevel: AppLog.Level {
+        get { AppLog.Level(rawValue: logLevelRaw) ?? .warn }
+        set { logLevelRaw = newValue.rawValue }
+    }
     /// Whether the workspace panel should be shown by default.
     @Published var showWorkspaceRaw: Bool {
         didSet { defaults.set(showWorkspaceRaw, forKey: "showWorkspace") }
@@ -103,6 +123,8 @@ final class AppSettings: ObservableObject {
         accentColorHex = defaults.integer(forKey: "accentColorHex") == 0 ? 0xE37654 : defaults.integer(forKey: "accentColorHex")
         standbyServersRaw = defaults.string(forKey: "standbyServers") ?? "[]"
         showWorkspaceRaw = defaults.object(forKey: "showWorkspace") as? Bool ?? false
+        logLevelRaw = defaults.string(forKey: "logLevel") ?? AppLog.Level.warn.rawValue
+        diagnosticConsoleEnabled = defaults.bool(forKey: "diagnosticConsoleEnabled")
     }
 
     var language: AppLanguage {

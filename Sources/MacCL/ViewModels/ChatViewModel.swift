@@ -105,6 +105,12 @@ final class ChatViewModel: ObservableObject {
     /// session (dequeued late via DispatchQueue.main.async) cannot mutate another
     /// conversation's items.
     private var sessionEpoch: UUID = .init()
+    /// Captured epoch for callbacks that fire outside the wire() closure chain
+    /// (health monitor delegate calls) — prevents stale callbacks from mutating
+    /// a newer conversation's state.
+    private var bridgeDeathEpoch: UUID? = nil
+    /// Prevents double-tap send: the same UUID guards one in-flight launch task.
+    private var activeLaunchTask: UUID? = nil
 
     /// Token to remove the app-quit notification observer — prevents zombie callbacks.
     private var quitObserver: NSObjectProtocol?
@@ -206,7 +212,9 @@ final class ChatViewModel: ObservableObject {
         }
         appendItem(.user(text: text, attachments: atts))
         persist()
-        Task { await launchOrContinue(blocks) }
+        let taskId = UUID()
+        activeLaunchTask = taskId
+        Task { await launchOrContinue(blocks, taskId: taskId) }
     }
 
     func addAttachments(urls: [URL]) {
@@ -296,6 +304,12 @@ final class ChatViewModel: ObservableObject {
         currentGroup = nil
         agentMonitor.clearAll()
         stopTurnTimer()
+        // Reset per-turn flags that persist across conversations.
+        didInterrupt = false
+        sawResultSinceLastTurn = false
+        lastSentBlocks = nil
+        autoCompacting = false
+        activeLaunchTask = nil
         // The new-conversation sheet sets the server right after this call;
         // until then, clear any stale block from the previous conversation.
         serverUnavailable = false
@@ -447,7 +461,11 @@ final class ChatViewModel: ObservableObject {
 
     // MARK: - Launch
 
-    private func launchOrContinue(_ blocks: [[String: Any]]) async {
+    private func launchOrContinue(_ blocks: [[String: Any]], taskId: UUID) async {
+        // Dedup guard: if a newer send() has superseded this task, drop it.
+        guard activeLaunchTask == taskId else { return }
+        defer { activeLaunchTask = nil }
+
         guard let claudePath = BinaryLocator.find("claude", override: settings.claudePathOverride) else {
             claudeAvailable = false
             appendNotice(.error, L10n.t("binary_not_found"))
@@ -557,6 +575,7 @@ final class ChatViewModel: ObservableObject {
 
     private func wire() {
         let myEpoch = sessionEpoch   // snapshot at wiring time
+        bridgeDeathEpoch = myEpoch   // for non-closure callbacks (health monitor)
         session.onEvent = { [weak self] env in
             guard let strongSelf = self, strongSelf.sessionEpoch == myEpoch else { return }
             strongSelf.handle(env)
@@ -663,17 +682,34 @@ final class ChatViewModel: ObservableObject {
                 autoCompacting = false
                 if !(env.isError ?? false), let blocks = lastSentBlocks {
                     appendNotice(.info, L10n.t("compacted_resend"))
-                    Task { await launchOrContinue(blocks) }
+                    Task { await launchOrContinue(blocks, taskId: UUID()) }
                     return
                 }
                 appendNotice(.warning, L10n.t("compact_failed"))
             }
             isRunning = false
-            let info = ResultInfo(isError: env.isError ?? false, text: env.result,
-                                  costUsd: env.totalCostUsd, durationMs: env.durationMs,
-                                  numTurns: env.numTurns)
+            let info = ResultInfo(
+                isError: env.isError ?? false,
+                text: env.result?.asString,     // use asString for plain-text result
+                costUsd: env.totalCostUsd, durationMs: env.durationMs,
+                numTurns: env.numTurns)
             appendItem(.result(info))
             if let c = env.totalCostUsd { totalCostUSD += c }
+
+            // Record per-turn metrics for the diagnostics dashboard. */
+            var tokensIn = 0, tokensOut = 0
+            if let usageObj = env.usage?.asObject {
+                tokensIn  = (usageObj["input_tokens"] ?? usageObj["prompt_tokens"] ?? .null).asNumber.flatMap { Int($0) } ?? 0
+                tokensOut = (usageObj["output_tokens"] ?? usageObj["completion_tokens"] ?? .null).asNumber.flatMap { Int($0) } ?? 0
+            }
+            AppMetrics.shared.record(
+                modelId: selectedModel.id,
+                provider: selectedModel.provider.rawValue,
+                tokensIn: Int(tokensIn), tokensOut: Int(tokensOut),
+                costUSD: env.totalCostUsd ?? 0,
+                latencyMs: env.durationMs ?? 0,
+                isError: env.isError ?? false
+            )
             // Settle all active agents when turn ends.
             agentMonitor.settleTurn()
             pendingTaskResults.removeAll()
@@ -686,7 +722,7 @@ final class ChatViewModel: ObservableObject {
             // arrive here. If it does, we cannot answer correctly yet — surface it.
             appendNotice(.warning, L10n.t("permission_pending"))
         default:
-            break
+            AppLog.warn("stream", "unhandled stream type '\(env.type)'")
         }
     }
 
@@ -718,7 +754,7 @@ final class ChatViewModel: ObservableObject {
                 }
             }
         default:
-            break
+            AppLog.warn("stream", "unhandled stream_event delta type '\(delta["type"]?.asString ?? "nil")'")
         }
     }
 
@@ -745,8 +781,9 @@ final class ChatViewModel: ObservableObject {
 
     /// True when a turn died because the context window is full.
     private func shouldAutoCompact(_ env: StreamEnvelope) -> Bool {
-        guard !autoCompactTriedThisTurn, env.isError == true,
-              let text = env.result?.lowercased() else { return false }
+        guard !autoCompactTriedThisTurn, env.isError == true else { return false }
+        // env.result is JSONValue? — use asString (which handles strings/numbers/bools).
+        let text = env.result?.asString?.lowercased() ?? ""
         return Self.contextLimitPatterns.contains { text.contains($0) }
     }
 
@@ -761,6 +798,9 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func handleExit(_ code: Int32) {
+        // Redundant guard — the onExit closure already checks sessionEpoch,
+        // but this prevents stale callbacks from any other path from corrupting state.
+        guard sessionEpoch == bridgeDeathEpoch else { return }
         watchdog?.cancel()
         waitingHint = nil
         autoCompacting = false
@@ -861,7 +901,8 @@ extension ChatViewModel: HealthDelegate {
     /// The bridge died while a turn was running: the in-flight request is gone.
     /// Close the turn with a clear error so the user can just resend.
     func turnBrokenByBridgeDeath() {
-        guard isRunning else { return }
+        let checkEpoch = sessionEpoch   // capture at call time
+        guard isRunning, checkEpoch == sessionEpoch else { return } // stale callback from old epoch
         watchdog?.cancel()
         waitingHint = nil
         isRunning = false
@@ -885,6 +926,9 @@ extension ChatViewModel: HealthDelegate {
 
     /// A turn is in flight — the health monitor must not restart the bridge now.
     var isTurnInFlight: Bool { isRunning }
+
+    /// The current session epoch for rejecting stale health callbacks.
+    var currentSessionEpoch: UUID { sessionEpoch }
 
     func routerDidRestart() {
         // The bridge really was restarted by restartBridge() before we get here,
@@ -1043,6 +1087,7 @@ private enum secretRedactor {
         var result: [NSRegularExpression] = []
         for pat in [
             "sk-[A-Za-z0-9]{20,}",
+            "sk-ant-[A-Za-z0-9_-]{20,}",  // P1: Anthropic API keys (audit finding)
             "ghp_[A-Za-z0-9]{36}",
             "glpat-[A-Za-z0-9]{20,}",
             "[A-Za-z0-9+/]{40,}={0,2}",

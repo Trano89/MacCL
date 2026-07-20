@@ -76,7 +76,7 @@ final class LiteLLMProcess {
         }
         progress(L10n.t("litellm_installing"))
         let pip = Self.venvDirectory.appendingPathComponent("bin/pip").path
-        if let err = await run(pip, ["install", "--quiet", "--upgrade", "litellm[proxy]"]) {
+        if let err = await run(pip, ["install", "--quiet", "--upgrade", "litellm[proxy]==1.60.0"]) {
             state = .failed(err)
             return err
         }

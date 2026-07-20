@@ -124,9 +124,12 @@ final class RouterProcess {
         }
         // Development fallback: walk up from the executable to find the repo.
         var dir = Bundle.main.bundleURL.deletingLastPathComponent()
-        for _ in 0..<6 {
+        for _ in 0..<4 {
+            // P1 fix: only accept paths that contain "MacCL" to avoid picking up
+            // unrelated router folders elsewhere in the filesystem.
             let candidate = dir.appendingPathComponent("router/anthropic-ollama-proxy.mjs")
-            if fm.fileExists(atPath: candidate.path) { return candidate }
+            if fm.fileExists(atPath: candidate.path),
+               candidate.path.contains("MacCL") { return candidate }
             dir = dir.deletingLastPathComponent()
         }
         return nil
