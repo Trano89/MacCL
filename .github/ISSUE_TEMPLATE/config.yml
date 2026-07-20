@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Trano89/MacCL/security/advisories/new
+    about: Please report privately rather than in a public issue.
+  - name: Claude Code CLI itself
+    url: https://code.claude.com
+    about: MacCL drives the official CLI — agent behaviour, tools and models belong there.
+  - name: Ollama
+    url: https://github.com/ollama/ollama
+    about: Model downloads, server settings and context length are handled by Ollama.

@@ -1,0 +1,47 @@
+name: Feature request
+description: Suggest an improvement
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: |
+        The situation, rather than the solution. Understanding the need often
+        leads somewhere better than the feature first imagined.
+      placeholder: "When I work with a remote server, I keep having to …"
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you have in mind
+      description: How you picture it working, if you have an idea.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of the app?
+      options:
+        - Conversations and transcript
+        - Models and Ollama servers
+        - Sub-agents
+        - Attachments and instructions
+        - Appearance and theming
+        - Settings, updates, packaging
+        - Something else
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      description: |
+        MacCL is an interface over the Claude Code CLI — it deliberately doesn't
+        reimplement the agent. Features that belong to the CLI itself are better
+        raised with Claude Code.
+      options:
+        - label: This is about the MacCL interface, not the agent's own behaviour.
+          required: false

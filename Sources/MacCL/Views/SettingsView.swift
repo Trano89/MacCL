@@ -326,7 +326,7 @@ private struct AboutTab: View {
     var body: some View {
         Form {
             Section(L10n.t("about")) {
-                LabeledContent(L10n.t("version"), value: "MacCL 0.1.0")
+                LabeledContent(L10n.t("version"), value: "MacCL 0.2.0")
                 Text(L10n.t("about_text"))
                     .foregroundStyle(.secondary)
             }
