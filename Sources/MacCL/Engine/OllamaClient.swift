@@ -20,13 +20,27 @@ enum OllamaClient {
     struct ModelDetails {
         let capabilities: [String]
         let contextMax: Int?
+        /// Architecture family ("qwen35moe", "llama"…). Two models of the same
+        /// family speak the same tool-call syntax, so one can lend its parser.
+        let family: String?
+        /// Built-in renderer/parser declared by the model, if any.
+        let renderer: String?
+        let parser: String?
+        /// Sampling settings baked into the model (temperature, top_k…).
+        let parameters: [String: String]
+
+        /// A tool-capable model that declares no parser forces Ollama to GENERATE
+        /// one from the model's Jinja template. Community repacks often ship
+        /// templates that make that generation fail outright ("Automatic parser
+        /// generation failed"), so the model 400s the moment tools are involved.
+        var lacksToolParser: Bool { capabilities.contains("tools") && parser == nil }
     }
 
     static func details(model: String, baseURL: String) async -> ModelDetails? {
         guard let url = URL(string: baseURL.trimmingTrailingSlash + "/api/show") else { return nil }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
-        req.timeoutInterval = 2.5
+        req.timeoutInterval = 4
         req.setValue("application/json", forHTTPHeaderField: "content-type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["model": model])
         guard let (data, _) = try? await URLSession.shared.data(for: req),
@@ -34,7 +48,28 @@ enum OllamaClient {
         let caps = obj["capabilities"] as? [String] ?? []
         let info = obj["model_info"] as? [String: Any] ?? [:]
         let ctx = info.first { $0.key.hasSuffix(".context_length") }?.value as? Int
-        return ModelDetails(capabilities: caps, contextMax: ctx)
+        let family = (obj["details"] as? [String: Any])?["family"] as? String
+
+        // The Modelfile is the only place RENDERER/PARSER/PARAMETER show up.
+        var renderer: String?
+        var parser: String?
+        var parameters: [String: String] = [:]
+        for rawLine in (obj["modelfile"] as? String ?? "").split(separator: "\n") {
+            let parts = rawLine.trimmingCharacters(in: .whitespaces)
+                .split(separator: " ", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else { continue }
+            let value = parts[1].trimmingCharacters(in: .whitespaces)
+            switch parts[0].uppercased() {
+            case "RENDERER": renderer = value
+            case "PARSER": parser = value
+            case "PARAMETER":
+                let kv = value.split(separator: " ", maxSplits: 1).map(String.init)
+                if kv.count == 2 { parameters[kv[0]] = kv[1].trimmingCharacters(in: .whitespaces) }
+            default: break
+            }
+        }
+        return ModelDetails(capabilities: caps, contextMax: ctx, family: family,
+                            renderer: renderer, parser: parser, parameters: parameters)
     }
 
     /// Returns discovered models, or an empty list if the server is unreachable.
@@ -149,11 +184,68 @@ enum OllamaClient {
 
     /// Create a derived model (`from` + parameters, e.g. num_ctx) — how you bake
     /// a context size into a model of your own on the server.
+    /// `renderer`/`parser` name Ollama's built-in implementations; passing them
+    /// is what spares the server from generating a parser out of the Jinja
+    /// template. Creation reuses the base model's layers: no re-download.
     static func createModel(name: String, from base: String, parameters: [String: Any],
+                            renderer: String? = nil, parser: String? = nil,
                             baseURL: String) async -> String? {
         var body: [String: Any] = ["model": name, "from": base, "stream": false]
         if !parameters.isEmpty { body["parameters"] = parameters }
+        if let renderer { body["renderer"] = renderer }
+        if let parser { body["parser"] = parser }
         return await post("/api/create", body: body, baseURL: baseURL, timeout: 600)
+    }
+
+    // MARK: - Tool-parser repair
+
+    /// A model on `baseURL` that can lend its built-in tool parser to `model`:
+    /// same architecture family, and it actually declares one.
+    static func parserDonor(for model: String, details: [String: ModelDetails])
+        -> (name: String, renderer: String?, parser: String)? {
+        guard let family = details[model]?.family else { return nil }
+        return details
+            .filter { $0.key != model && $0.value.family == family && $0.value.parser != nil }
+            .sorted { $0.key < $1.key }             // stable pick across refreshes
+            .first
+            .map { (name: $0.key, renderer: $0.value.renderer, parser: $0.value.parser!) }
+    }
+
+    /// Name proposed for the repaired copy: `…/Qwen3.6-Foo-GGUF:Q8_0` → `qwen3.6-foo:q8_0-fixed`.
+    static func repairedName(for model: String) -> String {
+        let lastPath = model.split(separator: "/").last.map(String.init) ?? model
+        let parts = lastPath.split(separator: ":", maxSplits: 1).map(String.init)
+        var slug = parts[0].lowercased()
+        if slug.hasSuffix("-gguf") { slug = String(slug.dropLast(5)) }
+        slug = slug.replacingOccurrences(of: "[^a-z0-9._-]", with: "-", options: .regularExpression)
+        let tag = parts.count > 1 ? parts[1].lowercased() : "latest"
+        return "\(slug):\(tag)-fixed"
+    }
+
+    /// Numbers must reach Ollama as numbers — a quoted "1.5" is rejected.
+    private static func typed(_ parameters: [String: String]) -> [String: Any] {
+        parameters.mapValues { value -> Any in
+            if let i = Int(value) { return i }
+            if let d = Double(value) { return d }
+            return value
+        }
+    }
+
+    /// Rebuild `model` as `newName` with a donor's built-in renderer/parser, so
+    /// tool calling stops depending on parser generation. The original is left
+    /// untouched. nil on success, else why not.
+    @MainActor
+    static func repairToolParser(model: String, as newName: String,
+                                 details: [String: ModelDetails], baseURL: String) async -> String? {
+        guard let donor = parserDonor(for: model, details: details) else {
+            return L10n.t("repair_no_donor")
+        }
+        // Keep the model's own sampling settings; fall back to the donor's when
+        // the repack shipped none (community GGUFs frequently ship none).
+        let ownParams = details[model]?.parameters ?? [:]
+        let params = ownParams.isEmpty ? (details[donor.name]?.parameters ?? [:]) : ownParams
+        return await createModel(name: newName, from: model, parameters: typed(params),
+                                 renderer: donor.renderer, parser: donor.parser, baseURL: baseURL)
     }
 
     /// Download a model onto the server, streaming progress lines as they come.
