@@ -240,10 +240,14 @@ enum OllamaClient {
         guard let donor = parserDonor(for: model, details: details) else {
             return L10n.t("repair_no_donor")
         }
-        // Keep the model's own sampling settings; fall back to the donor's when
-        // the repack shipped none (community GGUFs frequently ship none).
-        let ownParams = details[model]?.parameters ?? [:]
-        let params = ownParams.isEmpty ? (details[donor.name]?.parameters ?? [:]) : ownParams
+        // Borrow the parser, NEVER the donor's sampling settings — they are tuned
+        // for the donor's weights. Copying them was a real regression: the
+        // official qwen3.6:35b ships `repeat_penalty 1` because it relies on
+        // presence_penalty instead, and carrying that onto a repack that declared
+        // nothing removed Ollama's own 1.1 default, letting the model loop until
+        // it blew through the output-token cap. A repack with no parameters keeps
+        // Ollama's defaults, which is exactly what it had before the repair.
+        let params = details[model]?.parameters ?? [:]
         return await createModel(name: newName, from: model, parameters: typed(params),
                                  renderer: donor.renderer, parser: donor.parser, baseURL: baseURL)
     }
