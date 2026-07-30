@@ -574,7 +574,7 @@ final class ChatViewModel: ObservableObject {
             appendSystemPrompt: composedSystemPrompt(),
             streamPartial: settings.streamPartialMessages,
             sessionId: sid,
-            maxOutputTokens: settings.maxOutputTokens,
+            maxOutputTokens: settings.maxOutputTokensForChildEnv,
             extraEnv: extraEnv
         )
         do {

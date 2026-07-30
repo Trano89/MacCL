@@ -219,7 +219,7 @@ struct NewConversationSheet: View {
             permissionMode: permission, effort: effort,
             appendSystemPrompt: convInstructions,
             streamPartial: settings.streamPartialMessages, sessionId: "<uuid>",
-            maxOutputTokens: settings.maxOutputTokens)
+            maxOutputTokens: settings.maxOutputTokensForChildEnv)
         let cmd = "claude " + config.cliArguments(resume: false, forDisplay: true)
             .joined(separator: " ")
         // Two-step launch, like a human at a terminal: minimal command first,

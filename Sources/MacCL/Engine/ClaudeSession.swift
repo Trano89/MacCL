@@ -12,7 +12,7 @@ struct SessionConfig {
     var streamPartial: Bool
     var sessionId: String
     /// Cap on one reply's output tokens. 0 = leave the CLI's own default alone.
-    var maxOutputTokens: Int = 64_000
+    var maxOutputTokens: Int = 0   // 0 = leave it to ~/.claude/settings.json
     /// Extra environment (points `claude` at the conversation's Ollama server).
     var extraEnv: [String: String] = [:]
 
@@ -130,9 +130,13 @@ final class ClaudeSession {
         env["PATH"] = BinaryLocator.mergedPATH(base: env["PATH"])
         // App-level tuning, set here for every session and kept OUT of the
         // displayed launch command — it's plumbing, not session identity.
-        // Long agentic turns can exceed claude's default 32k output-token cap,
-        // killing the turn ("response exceeded the 32000 output token maximum").
-        if env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == nil, config.maxOutputTokens > 0 {
+        //
+        // The output-token cap normally lives in `~/.claude/settings.json`, the
+        // CLI's own preference file, and is NOT repeated here: setting it in both
+        // places is actively harmful — measured, the CLI then ignores both and
+        // falls back to its 32000 default. `maxOutputTokens` is non-zero only
+        // when that file could not be written, as a last resort.
+        if config.maxOutputTokens > 0, env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == nil {
             env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = String(config.maxOutputTokens)
         }
         // Ollama's /v1/messages sends nothing while a model cold-loads and the
