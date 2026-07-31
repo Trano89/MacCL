@@ -204,9 +204,31 @@ struct ChatView: View {
             effortMenu
             folderButton
             instructionsButton
+            agentsButton
             Spacer(minLength: 0)
             tokenChip
         }
+    }
+
+    /// Toggle for the sub-agent panel. It existed but could only be reached by
+    /// clicking a Task card in the transcript, so it was effectively invisible;
+    /// viewing sub-agents stays entirely optional.
+    private var agentsButton: some View {
+        Button {
+            withAnimation { vm.showAgentsPanel.toggle() }
+        } label: {
+            Label {
+                Text(L10n.t("agents_title"))
+            } icon: {
+                Image(systemName: vm.runningAgentCount > 0
+                      ? "person.2.badge.gearshape.fill" : "person.2")
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .tint(vm.showAgentsPanel ? Theme.accent : nil)
+        .badge(vm.runningAgentCount)
+        .help(L10n.t("agents_panel_help"))
     }
 
     /// Bottom-right token gauge: the conversation's current context footprint.
@@ -215,7 +237,10 @@ struct ChatView: View {
         Button {
             showTokenPopover = true
         } label: {
-            Label(Self.formatTokens(vm.contextTokens), systemImage: "chart.pie")
+            // "23,4k / 262k" — a bare number says nothing about how full it is.
+            Label(vm.contextCeiling.map {
+                "\(Self.formatTokens(vm.contextTokens)) / \(Self.formatTokens($0))"
+            } ?? Self.formatTokens(vm.contextTokens), systemImage: "chart.pie")
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
@@ -230,11 +255,11 @@ struct ChatView: View {
                     }
                     GridRow {
                         Text(L10n.t("tokens_in")).foregroundStyle(.secondary)
-                        Text(Self.formatTokens(vm.totalInputTokens)).monospacedDigit()
+                        Text(Self.formatTokens(vm.displayedInputTokens)).monospacedDigit()
                     }
                     GridRow {
                         Text(L10n.t("tokens_out")).foregroundStyle(.secondary)
-                        Text(Self.formatTokens(vm.totalOutputTokens)).monospacedDigit()
+                        Text(Self.formatTokens(vm.displayedOutputTokens)).monospacedDigit()
                     }
                 }
                 Divider()

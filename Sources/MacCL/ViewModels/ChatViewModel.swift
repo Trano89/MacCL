@@ -17,9 +17,21 @@ final class ChatViewModel: ObservableObject {
     // Token accounting, fed by the `usage` block of each turn's result.
     /// ≈ the conversation's current context footprint (last turn, prompt+cache+output).
     @Published var contextTokens: Int = 0
-    /// Cumulative tokens read (prompt + cache) and generated over the conversation.
+    /// Cumulative tokens read (prompt + cache) and generated over the conversation,
+    /// as settled by each turn's authoritative `result`.
     @Published var totalInputTokens: Int = 0
     @Published var totalOutputTokens: Int = 0
+    /// What the turn in flight has spent so far, from the `usage` of each
+    /// assistant event. Added to the settled totals for display, then folded in
+    /// (and reset) when the turn's result arrives — so the figures move during a
+    /// long tool loop instead of jumping only at the very end.
+    @Published var liveTurnInputTokens: Int = 0
+    @Published var liveTurnOutputTokens: Int = 0
+    var displayedInputTokens: Int { totalInputTokens + liveTurnInputTokens }
+    var displayedOutputTokens: Int { totalOutputTokens + liveTurnOutputTokens }
+    /// Context ceiling of the conversation's model, when it reports one — what
+    /// `contextTokens` is actually filling up.
+    var contextCeiling: Int? { selectedModel.contextMax }
     @Published var availableModels: [LLMModel] = LLMModel.anthropicCatalog
     @Published var claudeAvailable = true
     /// Elapsed seconds since the current turn started (for the agent progress button timer).
@@ -129,6 +141,80 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    /// Sub-agents still working — drives the badge on the panel toggle.
+    var runningAgentCount: Int { agents.filter(\.isRunning).count }
+
+    // MARK: - Conversations left working in the background
+
+    /// A conversation whose `claude` process keeps running while the user looks
+    /// at another one. Its events pile up here and are replayed on return, so
+    /// the work continues and the transcript comes back complete.
+    @MainActor
+    private final class ParkedConversation {
+        let session: ClaudeSession
+        var buffer: [StreamEnvelope] = []
+        var stderr = ""
+        var exitCode: Int32?
+        init(session: ClaudeSession) { self.session = session }
+    }
+
+    private var parked: [String: ParkedConversation] = [:]
+    /// Conversations still working while you are elsewhere — the sidebar marks them.
+    @Published private(set) var workingConversationIds: Set<String> = []
+
+    /// Leave the current conversation running instead of killing it. Switching
+    /// used to call `session.stop()`, so moving to another conversation aborted
+    /// the turn: coming back showed a transcript frozen mid-sentence with
+    /// nothing left running. Returns true when a session was parked.
+    private func parkCurrentIfWorking() -> Bool {
+        guard let id = currentConversationId, isRunning, session.isRunning else { return false }
+        flushStream()
+        persist()
+        let parkedConv = ParkedConversation(session: session)
+        // Its own callbacks: `wire()` keys on object identity, so the moment we
+        // swap `session` the original ones would go deaf and drop everything.
+        session.onEvent = { [weak parkedConv] env in parkedConv?.buffer.append(env) }
+        session.onStderr = { [weak parkedConv] text in
+            guard let parkedConv else { return }
+            parkedConv.stderr = String((parkedConv.stderr + text).suffix(2048))
+        }
+        session.onExit = { [weak parkedConv] code in parkedConv?.exitCode = code }
+        parked[id] = parkedConv
+        workingConversationIds.insert(id)
+        session = ClaudeSession()          // the next conversation gets a fresh one
+        AppLog.write("session", "conversation \(id) parked — still working in background")
+        return true
+    }
+
+    /// Re-adopt a parked conversation: its process is still the live one, and
+    /// every event received while away is replayed so the transcript catches up
+    /// in one go, then keeps streaming normally.
+    private func adoptParkedIfAny(_ id: String) {
+        guard let parkedConv = parked.removeValue(forKey: id) else { return }
+        workingConversationIds.remove(id)
+        session = parkedConv.session
+        wire()
+        isRunning = parkedConv.exitCode == nil && parkedConv.session.isRunning
+        if isRunning { startTurnTimer() }
+        if !parkedConv.stderr.isEmpty { stderrTail = parkedConv.stderr }
+        for env in parkedConv.buffer { handle(env) }
+        if let code = parkedConv.exitCode { handleExit(code) }
+        AppLog.write("session",
+                     "conversation \(id) resumed — \(parkedConv.buffer.count) events replayed")
+    }
+
+    /// Kill every background conversation (app quit, or one being deleted).
+    private func stopParked(_ id: String? = nil) {
+        if let id {
+            parked.removeValue(forKey: id)?.session.stop()
+            workingConversationIds.remove(id)
+        } else {
+            for (_, parkedConv) in parked { parkedConv.session.stop() }
+            parked.removeAll()
+            workingConversationIds.removeAll()
+        }
+    }
+
     /// Open the panel focused on one agent (the link in the transcript).
     func openAgent(_ id: String) {
         selectedAgentId = id
@@ -191,7 +277,7 @@ final class ChatViewModel: ObservableObject {
         quitObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.session.stop() }
+            Task { @MainActor in self?.session.stop(); self?.stopParked() }
         }
     }
 
@@ -328,8 +414,12 @@ final class ChatViewModel: ObservableObject {
         watchdog?.cancel()
         waitingHint = nil
         pendingInternalResults = 0
-        session.stop()
-        session = ClaudeSession()   // replacing the object orphans old callbacks
+        // Park a working conversation rather than aborting it — starting a new
+        // one must not cost you the turn the previous one was in the middle of.
+        if !parkCurrentIfWorking() {
+            session.stop()
+            session = ClaudeSession()   // replacing the object orphans old callbacks
+        }
         wire()
         items = []
         toolIndex.removeAll()
@@ -339,6 +429,9 @@ final class ChatViewModel: ObservableObject {
         resumeOnNextStart = false
         totalCostUSD = 0
         contextTokens = 0
+        liveTurnInputTokens = 0
+        liveTurnOutputTokens = 0
+        discardStreamBuffers()
         totalInputTokens = 0
         totalOutputTokens = 0
         agentActivity = [:]
@@ -364,8 +457,12 @@ final class ChatViewModel: ObservableObject {
         watchdog?.cancel()
         waitingHint = nil
         pendingInternalResults = 0
-        session.stop()
-        session = ClaudeSession()
+        // Leave a working conversation running in the background; we re-adopt it
+        // at the end of this method if the one being opened IS that conversation.
+        if !parkCurrentIfWorking() {
+            session.stop()
+            session = ClaudeSession()
+        }
         wire()                     // rewire with fresh epoch
         items = convo.items
         // Restart the id counter past every restored "item-N": a fresh counter
@@ -378,6 +475,9 @@ final class ChatViewModel: ObservableObject {
         conversationCreatedAt = convo.createdAt
         totalCostUSD = convo.totalCostUSD
         contextTokens = convo.contextTokens ?? 0
+        liveTurnInputTokens = 0
+        liveTurnOutputTokens = 0
+        discardStreamBuffers()
         totalInputTokens = convo.totalInputTokens ?? 0
         totalOutputTokens = convo.totalOutputTokens ?? 0
         agentActivity = [:]
@@ -404,6 +504,11 @@ final class ChatViewModel: ObservableObject {
         // Restore the conversation's model FIRST; refreshModels() then keeps it
         // even when its server is down (the conversation just waits).
         settings.selectedModelId = convo.modelId
+        // Was this conversation still working in the background? Take its live
+        // process back and replay everything that happened while you were away,
+        // so it reappears complete and keeps streaming. Last, so it applies on
+        // top of the freshly restored state.
+        adoptParkedIfAny(convo.id)
         Task { [weak self] in
             guard let self else { return }
             await self.refreshModels()
@@ -419,6 +524,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     func deleteConversation(_ summary: ConversationSummary) {
+        stopParked(summary.id)      // never leave an orphan process behind
         ConversationStore.shared.delete(summary.id)
         if summary.id == currentConversationId { newConversation() }
     }
@@ -655,6 +761,10 @@ final class ChatViewModel: ObservableObject {
             receivedContentThisTurn = true
             waitingHint = nil
         }
+        // Any canonical event must see the streamed text already applied,
+        // otherwise the final assistant message lands beside a half-written
+        // duplicate instead of replacing it.
+        if env.type != "stream_event" { flushStream() }
         switch env.type {
         case "system":
             if env.subtype == "init" {
@@ -666,9 +776,19 @@ final class ChatViewModel: ObservableObject {
                 }
             }
         case "assistant":
-            // Live context gauge: every assistant event carries this API call's
-            // usage (verified). Latest wins — independent of the result plumbing,
-            // so the gauge moves even mid-turn during long tool loops.
+            // Live token accounting: every assistant event carries this API
+            // call's usage (verified). The gauge takes the latest footprint —
+            // that IS the context, not a sum — while the running totals add each
+            // call up, so both move mid-turn during long tool loops instead of
+            // only at the end.
+            if let u = env.message?.usage {
+                let inHere = (u["input_tokens"]?.asInt ?? 0)
+                    + (u["cache_read_input_tokens"]?.asInt ?? 0)
+                    + (u["cache_creation_input_tokens"]?.asInt ?? 0)
+                let outHere = u["output_tokens"]?.asInt ?? 0
+                liveTurnInputTokens += inHere
+                liveTurnOutputTokens += outHere
+            }
             if let u = env.message?.usage {
                 let footprint = (u["input_tokens"]?.asInt ?? 0)
                     + (u["cache_read_input_tokens"]?.asInt ?? 0)
@@ -770,8 +890,12 @@ final class ChatViewModel: ObservableObject {
                 let cacheRead = u["cache_read_input_tokens"]?.asInt ?? 0
                 let cacheCreate = u["cache_creation_input_tokens"]?.asInt ?? 0
                 let outTok = u["output_tokens"]?.asInt ?? 0
+                // The result is authoritative for the whole turn: settle with it
+                // and drop the live running estimate rather than adding both.
                 totalInputTokens += inTok + cacheRead + cacheCreate
                 totalOutputTokens += outTok
+                liveTurnInputTokens = 0
+                liveTurnOutputTokens = 0
                 // Feed the diagnostics dashboard with this turn's real figures.
                 AppMetrics.shared.record(
                     modelId: selectedModel.id,
@@ -808,30 +932,82 @@ final class ChatViewModel: ObservableObject {
 
     /// Live token streaming: apply thinking/text deltas as they arrive so long
     /// turns (local models with reasoning) never look frozen.
+    ///
+    /// Deltas are buffered, not applied one by one. Mutating `items` republishes
+    /// the whole transcript and `currentReasoning` re-renders a panel that only
+    /// grows; doing that per token means ~60 full SwiftUI passes a second on a
+    /// local model, which is exactly the jerkiness and lag. Buffered and flushed
+    /// at 20 Hz it reads as continuous and costs a fraction.
     private func handleStreamEvent(_ event: JSONValue?) {
         guard let event, event["type"]?.asString == "content_block_delta",
               let delta = event["delta"] else { return }
         switch delta["type"]?.asString {
         case "thinking_delta":
             if let t = delta["thinking"]?.asString, !t.isEmpty {
-                currentReasoning += t
+                pendingThinking += t
                 streamedThinkingThisMessage = true
+                scheduleStreamFlush()
             }
         case "text_delta":
             if let t = delta["text"]?.asString, !t.isEmpty {
-                if let idx = streamingTextIndex, idx < items.count,
-                   case .assistantText(let existing) = items[idx].kind {
-                    var copy = items[idx]
-                    copy.kind = .assistantText(existing + t)
-                    items.replaceSubrange(idx...idx, with: [copy])
-                } else {
-                    appendItem(.assistantText(t))
-                    streamingTextIndex = items.count - 1
-                }
+                pendingText += t
+                scheduleStreamFlush()
             }
         default:
             break
         }
+    }
+
+    // MARK: - Streaming coalescer
+
+    private var pendingText = ""
+    private var pendingThinking = ""
+    private var streamFlushTask: Task<Void, Never>?
+    private static let streamFlushInterval: UInt64 = 50_000_000   // 20 Hz
+
+    private func scheduleStreamFlush() {
+        guard streamFlushTask == nil else { return }
+        streamFlushTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.streamFlushInterval)
+                guard let self else { return }
+                self.flushStream()
+                // Nothing buffered and the turn is over → stop ticking.
+                if self.pendingText.isEmpty, self.pendingThinking.isEmpty, !self.isRunning {
+                    self.streamFlushTask = nil
+                    return
+                }
+            }
+        }
+    }
+
+    /// Apply everything buffered. Must run before any canonical event is handled,
+    /// so the final assistant message replaces exactly what was streamed.
+    private func flushStream() {
+        if !pendingThinking.isEmpty {
+            currentReasoning += pendingThinking
+            pendingThinking = ""
+        }
+        guard !pendingText.isEmpty else { return }
+        let chunk = pendingText
+        pendingText = ""
+        if let idx = streamingTextIndex, idx < items.count,
+           case .assistantText(let existing) = items[idx].kind {
+            var copy = items[idx]
+            copy.kind = .assistantText(existing + chunk)
+            items[idx] = copy
+        } else {
+            appendItem(.assistantText(chunk))
+            streamingTextIndex = items.count - 1
+        }
+    }
+
+    /// Drop anything buffered — on stop, or when leaving the conversation.
+    private func discardStreamBuffers() {
+        streamFlushTask?.cancel()
+        streamFlushTask = nil
+        pendingText = ""
+        pendingThinking = ""
     }
 
     private func handleStderr(_ s: String) {

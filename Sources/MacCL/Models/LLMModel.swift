@@ -25,6 +25,10 @@ struct LLMModel: Identifiable, Hashable {
     /// Friendly server name shown as subtitle for network servers.
     var serverName: String?
     var subtitle: String?
+    /// Context ceiling the model reports, when it reports one. Kept as a value
+    /// and not only baked into the subtitle: the token gauge needs the number to
+    /// show how full the conversation's window actually is.
+    var contextMax: Int?
 
     static let anthropicCatalog: [LLMModel] = [
         LLMModel(id: "anthropic:opus", provider: .anthropic, name: "Claude Opus 4.8",
@@ -64,7 +68,8 @@ struct LLMModel: Identifiable, Hashable {
         if capabilities.contains("tools") { subtitle += " · outils" }
         if capabilities.contains("vision") { subtitle += " · vision" }
         return LLMModel(id: "ollama:\(name)", provider: .ollama, name: name,
-                        modelArg: name, serverName: host, subtitle: subtitle)
+                        modelArg: name, serverName: host, subtitle: subtitle,
+                        contextMax: contextMax)
     }
 
     /// 40960 → "40k", 262144 → "256k", 10485760 → "10M".
