@@ -19,12 +19,14 @@ And this is the heart of the project: **the Claude Code CLI's tools, with the LL
 MacCL.app (the interface)
    │
    ▼
-Claude Code CLI (the agent + its tools)
+Claude Code CLI (the agent + its tools)  ── runs here, or over SSH on another machine
    ├──►  Anthropic cloud   (Opus, Sonnet, Haiku…)
    └──►  Ollama server      (your LLM — this Mac, or any machine nearby)
 ```
 
-Nothing is hidden: every conversation shows the CLI command behind it — the model, the flags, the server it talks to — so you can always see what the app asked the agent to do. Honest by design.
+Two axes, and they're independent: **which brain** thinks (Anthropic or Ollama), and **which machine** the agent works on. A conversation can run a local Ollama model against a project on a server across the room, or Anthropic's Opus against a folder on this Mac — any combination.
+
+Nothing is hidden: every conversation shows the CLI command behind it — the model, the flags, the server it talks to, the machine it runs on — so you can always see what the app asked the agent to do. Honest by design.
 
 One more thing worth knowing: **each conversation is tied to the server you picked for it.** If that machine goes offline, the conversation waits and tells you — it never quietly switches your work to a different computer.
 
@@ -32,6 +34,7 @@ One more thing worth knowing: **each conversation is tied to the server you pick
 
 - Persistent conversations with resume, grouping, and running cost
 - Any model, per conversation: Anthropic (Opus, Sonnet, Haiku, Fable) or Ollama — with automatic discovery of servers on your network
+- Work on a **remote machine over SSH**: connect with user, address and password, browse its folders from inside the app, and the agent runs *there*
 - Live view of the model's reasoning; effort level adjustable mid-conversation
 - Live token gauge per conversation, with one-click context compaction when it grows too big
 - Attachments: images (for vision models), text files, anything else by reference
@@ -47,7 +50,7 @@ One more thing worth knowing: **each conversation is tied to the server you pick
 
 **The easy way:** download the DMG from the [latest release](https://github.com/Trano89/MacCL/releases/latest), open it, and drag **MacCL** into **Applications**. On first launch macOS will block it (the app is self-signed): right-click → *Open* on macOS 14, or open it once then allow it from System Settings → Privacy & Security on macOS 15+.
 
-**From source** — you'll need macOS 14 or newer, Swift 6 (comes with Xcode), and the [Claude Code CLI](https://code.claude.com) installed and signed in (`claude` available in your terminal). For local models: [Ollama](https://ollama.com) 0.14 or newer, with at least one model pulled (`ollama pull qwen3-coder:30b`).
+**From source** — you'll need macOS 14 or newer, Swift 6 (comes with Xcode), and the [Claude Code CLI](https://code.claude.com) installed and signed in (`claude` available in your terminal). For local models: [Ollama](https://ollama.com) 0.14 or newer, with at least one model pulled (`ollama pull qwen3-coder:30b`). To work on a remote machine over SSH, that machine needs its own `claude`, installed and signed in.
 
 ```bash
 git clone https://github.com/Trano89/MacCL.git
@@ -79,7 +82,18 @@ Then, back in MacCL: hit **Scan** to sweep your network — or just type the mac
 
 **Models on the server** — click the server chip → *Manage models*: see what's installed (with sizes), delete with one click, or type terminal-style commands — `pull qwen3:14b`, `rm llama3:8b`, `cp a b`, `create fast from qwen3:8b num_ctx 8192`. Works the same on a remote machine — it's all Ollama's HTTP API.
 
-**Coding instructions** — sidebar → *Manage instructions*: Markdown files you edit inside the app, ticked to be injected into the system prompt. A conversation can also get its own instructions when you create it.
+**Working on another machine (SSH)** — click the folder chip → **SSH machine** → *Connect to a machine*. Enter the user, the address, and the password (leave it empty to use your SSH keys or `~/.ssh/config`), then browse the remote folders and pick your project. Folders that are git repositories or already carry a `CLAUDE.md` are flagged, so a project is easy to spot.
+
+From then on the Claude Code CLI **runs on that machine**: its shell, its edits, its searches all happen over there, and no file is copied back and forth. Two things to know:
+
+- The `claude` CLI must be installed and signed in on the remote machine. MacCL checks before spending a turn and says so plainly if it isn't.
+- The first connection to a machine shows its SSH host-key fingerprint and waits for you to confirm it. MacCL never trusts a key on its own — an agent running with permissions on someone else's server is not something to hand out on a guess.
+
+Passwords are stored in the macOS Keychain, never in the preferences or the conversation files. Nothing extra to install: MacCL uses OpenSSH's own askpass mechanism, which ships with macOS.
+
+> If the model is an Ollama running on *this* Mac, MacCL opens a reverse tunnel so the remote agent reaches it — because `localhost` means something else once the agent is elsewhere. If the tunnel can't be established, the session fails loudly rather than silently talking to a different Ollama.
+
+**Coding instructions** — sidebar → *Manage instructions*: Markdown files you edit inside the app, ticked to be injected into the system prompt. A conversation can also get its own instructions when you create it. The project `CLAUDE.md` tab edits the file in the working folder — on the remote machine too, when that's where you're working.
 
 **Permissions** — from fully autonomous (*all tools*) to plan-only (the agent thinks but never executes), chosen per conversation.
 
@@ -91,7 +105,7 @@ Then, back in MacCL: hit **Scan** to sweep your network — or just type the mac
 Sources/MacCL/
 ├── App/              SwiftUI entry point + Settings window
 ├── Models/           Protocol decoding, model catalog, settings, persistence
-├── Engine/           ClaudeSession (drives the CLI), OllamaClient, network discovery
+├── Engine/           ClaudeSession (drives the CLI), SSHClient, OllamaClient, discovery
 ├── ViewModels/       ChatViewModel (conversation orchestration)
 └── Views/            Sidebar, chat, message rows, tool cards, Settings…
 ```

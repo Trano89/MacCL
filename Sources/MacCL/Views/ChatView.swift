@@ -12,6 +12,7 @@ struct ChatView: View {
     @State private var showModelPicker = false
     @State private var showServerPicker = false
     @State private var showTokenPopover = false
+    @State private var showWorkLocation = false
 
     private static let fallbackSlashCommands = [
         "compact", "context", "init", "review", "security-review", "usage",
@@ -349,13 +350,39 @@ struct ChatView: View {
         .help(L10n.t("effort_help") + " " + settings.effortLevel.explanation)
     }
 
+    /// The working folder — and, since it may live on another machine, which one.
     private var folderButton: some View {
-        Button(action: chooseFolder) {
-            Label(folderDisplayName, systemImage: "folder")
+        Button {
+            showWorkLocation = true
+        } label: {
+            Label(folderDisplayName, systemImage: folderIcon)
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .help(L10n.t("folder_help") + " : " + settings.workingDirectory)
+        // A conversation whose machine was deleted can't run anywhere: flag it
+        // here rather than letting the user write a message first and find out
+        // when they press send.
+        .tint(vm.hasOrphanedHost ? .orange : nil)
+        .help(folderTooltip)
+        .sheet(isPresented: $showWorkLocation) {
+            WorkLocationSheet(initial: settings.workLocation) { location in
+                if let location { settings.workLocation = location }
+                showWorkLocation = false
+            }
+        }
+    }
+
+    private var folderIcon: String {
+        if vm.hasOrphanedHost { return "exclamationmark.triangle" }
+        return vm.remoteHost == nil ? "folder" : "network"
+    }
+
+    private var folderTooltip: String {
+        if vm.hasOrphanedHost { return L10n.t("ssh_host_gone") }
+        guard let host = vm.remoteHost else {
+            return L10n.t("folder_help") + " : " + settings.workingDirectory
+        }
+        return L10n.t("folder_help") + " : " + host.detailedTarget + ":" + settings.workingDirectory
     }
 
     private var instructionsButton: some View {
@@ -370,21 +397,18 @@ struct ChatView: View {
         .help(L10n.t("instructions_help"))
     }
 
+    /// Just the folder locally; prefixed with the machine when it's elsewhere,
+    /// because "src" on this Mac and "src" on a server are not interchangeable.
     private var folderDisplayName: String {
+        let leaf: String
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        if settings.workingDirectory == home { return "~" }
-        return URL(fileURLWithPath: settings.workingDirectory).lastPathComponent
-    }
-
-    private func chooseFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.directoryURL = URL(fileURLWithPath: settings.workingDirectory)
-        if panel.runModal() == .OK, let url = panel.url {
-            settings.workingDirectory = url.path
+        if vm.remoteHost == nil, settings.workingDirectory == home {
+            leaf = "~"
+        } else {
+            leaf = URL(fileURLWithPath: settings.workingDirectory).lastPathComponent
         }
+        guard let host = vm.remoteHost else { return leaf }
+        return host.label + " : " + leaf
     }
 
     private func pickFiles() {

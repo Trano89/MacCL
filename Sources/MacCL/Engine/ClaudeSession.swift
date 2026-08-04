@@ -5,6 +5,11 @@ import Dispatch
 struct SessionConfig {
     var claudePath: String
     var workingDirectory: String
+    /// nil = run on this Mac. Non-nil = run `claude` on that machine over ssh,
+    /// with `workingDirectory` read on the remote filesystem. Everything else in
+    /// this struct is unchanged: the CLI arguments and the newline-delimited JSON
+    /// protocol are identical whether the process is local or a pipe through ssh.
+    var remoteHost: SSHHost?
     var model: LLMModel
     var permissionMode: PermissionMode
     var effort: EffortLevel
@@ -15,6 +20,40 @@ struct SessionConfig {
     var maxOutputTokens: Int = 64_000
     /// Extra environment (points `claude` at the conversation's Ollama server).
     var extraEnv: [String: String] = [:]
+    /// Reverse-tunnel options when the conversation's Ollama runs on this Mac and
+    /// `claude` runs elsewhere — see `SSHClient.reverseTunnel(forServerURL:)`.
+    var reverseTunnelOptions: [String] = []
+
+    var isRemote: Bool { remoteHost != nil }
+
+    /// The environment `claude` itself must see. Locally these are applied to the
+    /// child process; remotely they ride along in the command's `env` prefix,
+    /// because ssh forwards no environment by default.
+    ///
+    /// App-level plumbing lives here rather than in `extraEnv` so it stays out of
+    /// the command shown to the user — it isn't part of the session's identity.
+    func childEnvironment(inherited: [String: String]) -> [String: String] {
+        var env: [String: String] = [:]
+        // Long agentic turns can exceed claude's default 32k output-token cap,
+        // killing the turn ("response exceeded the 32000 output token maximum").
+        if inherited["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == nil, maxOutputTokens > 0 {
+            env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = String(maxOutputTokens)
+        }
+        // Ollama's /v1/messages sends nothing while a model cold-loads and the
+        // prompt evaluates (62 s measured); claude's default timeout sits right
+        // there and turned cold turns into a retry loop. Harmless for Anthropic.
+        if inherited["API_TIMEOUT_MS"] == nil {
+            env["API_TIMEOUT_MS"] = "600000"
+        }
+        // Background calls would evict the conversation's prompt cache on an
+        // Ollama server — one stray request and the next turn re-evaluates the
+        // whole prefix.
+        if inherited["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == nil {
+            env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+        }
+        for (k, v) in extraEnv { env[k] = v }
+        return env
+    }
 
     /// The `claude` arguments, built ONCE for both the real spawn and the
     /// transcript display so they can never drift apart. Strict minimum per the
@@ -39,6 +78,44 @@ struct SessionConfig {
         }
         args += resume ? ["--resume", sessionId] : ["--session-id", sessionId]
         return args
+    }
+
+    /// The session as a human would type it in a terminal, used by the launch
+    /// notice and by the new-conversation preview. Same builders as the real
+    /// spawn, so the two can't drift.
+    ///
+    /// A remote session is shown as the three steps it really is — connect, cd,
+    /// run — rather than the single quoted blob that crosses the wire: the point
+    /// is for the user to recognise their own command, not to audit the escaping.
+    static func displayCommand(config: SessionConfig, resumed: Bool) -> String {
+        let env = config.extraEnv
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: " ")
+        let prefix = env.isEmpty ? "" : env + " "
+        let args = config.cliArguments(resume: resumed, forDisplay: true).joined(separator: " ")
+
+        var lines: [String] = []
+        if let host = config.remoteHost {
+            // Only the options that change the outcome: the boilerplate
+            // (-T, timeouts, keep-alives, strict host-key checking) is noise here.
+            var sshArgs: [String] = []
+            if host.port != 22 { sshArgs += ["-p", String(host.port)] }
+            if !host.identityFile.isEmpty { sshArgs += ["-i", host.identityFile] }
+            sshArgs += config.reverseTunnelOptions.filter { $0 != "-o" && !$0.hasPrefix("ExitOnForward") }
+            lines.append("$ ssh " + (sshArgs + [host.target]).joined(separator: " "))
+            // The real binary path, resolved on the remote by the probe.
+            let binary = host.remoteClaudePath.isEmpty ? "claude" : host.remoteClaudePath
+            lines.append("$ cd \"\(config.workingDirectory)\"")
+            lines.append("$ \(prefix)\(binary) \(args)")
+        } else {
+            // The real binary path, not a bare "claude": a CLI installed outside
+            // the PATH would otherwise be misreported.
+            lines.append("$ cd \"\(config.workingDirectory)\"")
+            lines.append("$ \(prefix)\(config.claudePath) \(args)")
+        }
+        lines.append("> /effort \(config.effort.cliValue)")
+        return lines.joined(separator: "\n")
     }
 }
 
@@ -120,34 +197,42 @@ final class ClaudeSession {
 
     private func spawn(config: SessionConfig, resume: Bool) throws {
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: config.claudePath)
-        proc.currentDirectoryURL = URL(fileURLWithPath: config.workingDirectory)
+        let args = config.cliArguments(resume: resume)
 
-        proc.arguments = config.cliArguments(resume: resume)
-
-        // Environment: inherit, then guarantee a usable PATH and apply overrides.
+        // Environment: inherit, then guarantee a usable PATH.
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = BinaryLocator.mergedPATH(base: env["PATH"])
-        // App-level tuning, set here for every session and kept OUT of the
-        // displayed launch command — it's plumbing, not session identity.
-        // Long agentic turns can exceed claude's default 32k output-token cap,
-        // killing the turn ("response exceeded the 32000 output token maximum").
-        if env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == nil, config.maxOutputTokens > 0 {
-            env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = String(config.maxOutputTokens)
+
+        if let host = config.remoteHost {
+            // Remote: ssh becomes the child process. Its stdin/stdout carry the
+            // exact same newline-delimited JSON, so everything downstream — the
+            // buffering, the decoder, the callbacks — is untouched.
+            //
+            // The remote gets a clean slate for the child environment: ssh
+            // forwards nothing, so `inherited` is empty and every variable
+            // `claude` needs is written into the command's own `env` prefix.
+            let remoteEnv = config.childEnvironment(inherited: [:])
+            let command = SSHClient.claudeCommand(directory: config.workingDirectory,
+                                                  claudePath: host.remoteClaudePath,
+                                                  arguments: args,
+                                                  environment: remoteEnv)
+            let options = SSHClient.keepAliveOptions + config.reverseTunnelOptions
+            switch SSHClient.launch(for: host, remoteCommand: command, extraOptions: options) {
+            case .failure(let failure):
+                throw failure
+            case .success(let launch):
+                proc.executableURL = URL(fileURLWithPath: launch.executable)
+                proc.arguments = launch.arguments
+                for (k, v) in launch.environment { env[k] = v }
+            }
+        } else {
+            proc.executableURL = URL(fileURLWithPath: config.claudePath)
+            proc.currentDirectoryURL = URL(fileURLWithPath: config.workingDirectory)
+            proc.arguments = args
+            // App-level tuning, kept OUT of the displayed launch command — it's
+            // plumbing, not session identity.
+            for (k, v) in config.childEnvironment(inherited: env) { env[k] = v }
         }
-        // Ollama's /v1/messages sends nothing while a model cold-loads and the
-        // prompt evaluates (62 s measured); claude's default timeout sits right
-        // there and turned cold turns into a retry loop. Harmless for Anthropic.
-        if env["API_TIMEOUT_MS"] == nil {
-            env["API_TIMEOUT_MS"] = "600000"
-        }
-        // Background calls would evict the conversation's prompt cache on an
-        // Ollama server — one stray request and the next turn re-evaluates the
-        // whole prefix.
-        if env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == nil {
-            env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
-        }
-        for (k, v) in config.extraEnv { env[k] = v }
         proc.environment = env
 
         let stdinPipe = Pipe()

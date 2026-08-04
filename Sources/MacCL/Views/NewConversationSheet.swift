@@ -18,6 +18,9 @@ struct NewConversationSheet: View {
     @State private var loadingModels = false
     @State private var modelId = ""
     @State private var workingDirectory = ""
+    /// "" = this Mac, otherwise the id of the SSHHost the folder lives on.
+    @State private var workHostId = ""
+    @State private var showWorkLocation = false
     @State private var permission: PermissionMode = .bypassPermissions
     @State private var effort: EffortLevel = .high
     @State private var convInstructions = ""
@@ -30,7 +33,27 @@ struct NewConversationSheet: View {
     /// server address. Everything downstream uses this, never the raw field.
     private var resolvedServerURL: String? { URLValidator.sanitizeAndValidate(serverURL) }
 
+    /// The machine the working folder lives on, nil when it's this Mac.
+    private var workHost: SSHHost? { SSHHostStore.shared.host(id: workHostId) }
+
     var body: some View {
+        // The location picker is a MODE, not a nested sheet — same reason as
+        // ServerPickerSheet's model manager: sheets over sheets have misbehaved
+        // in this app before.
+        if showWorkLocation {
+            WorkLocationSheet(initial: WorkLocation(hostId: workHostId, path: workingDirectory)) { location in
+                if let location {
+                    workingDirectory = location.path
+                    workHostId = location.hostId
+                }
+                showWorkLocation = false
+            }
+        } else {
+            launchForm
+        }
+    }
+
+    private var launchForm: some View {
         VStack(spacing: 0) {
             HStack {
                 Label(L10n.t("new_conversation"), systemImage: "terminal")
@@ -62,12 +85,17 @@ struct NewConversationSheet: View {
                     }
                     LabeledContent(L10n.t("folder_help")) {
                         HStack(spacing: 8) {
+                            if let host = workHost {
+                                Label(host.label, systemImage: "network")
+                                    .font(.caption)
+                                    .foregroundStyle(Theme.accent)
+                            }
                             Text(displayPath(workingDirectory))
                                 .font(.system(.body, design: .monospaced))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
-                            Button(L10n.t("choose"), action: chooseFolder)
+                            Button(L10n.t("choose")) { showWorkLocation = true }
                         }
                     }
                     Picker(L10n.t("permissions"), selection: $permission) {
@@ -111,6 +139,7 @@ struct NewConversationSheet: View {
             serverURL = settings.ollamaBaseURL     // last used, as a default
             modelId = settings.selectedModelId
             workingDirectory = settings.workingDirectory
+            workHostId = settings.workLocationHostId
             permission = settings.permissionMode
             effort = settings.effortLevel
             convInstructions = vm.conversationInstructions
@@ -205,42 +234,34 @@ struct NewConversationSheet: View {
     private var commandPreview: String {
         guard let m = model else { return "" }
         // Same builders as the real spawn (SessionConfig + ModelRouter), so the
-        // preview can never drift from what actually executes.
-        var env = ""
-        if m.provider != .anthropic {
-            env = ModelRouter.shared
-                .environment(for: m, serverURL: resolvedServerURL ?? serverURL)
-                .sorted { $0.key < $1.key }
-                .map { "\($0.key)=\($0.value)" }
-                .joined(separator: " ") + " "
+        // preview can never drift from what actually executes — including the
+        // ssh hop and the reverse tunnel when the folder is on another machine.
+        let server = resolvedServerURL ?? serverURL
+        let env = m.provider == .anthropic
+            ? [:] : ModelRouter.shared.environment(for: m, serverURL: server)
+        let host = workHost
+        var tunnel: [String] = []
+        if host != nil, m.provider != .anthropic,
+           let t = SSHClient.reverseTunnel(forServerURL: server) {
+            tunnel = t.options
         }
         let config = SessionConfig(
-            claudePath: "claude", workingDirectory: workingDirectory, model: m,
+            claudePath: "claude", workingDirectory: workingDirectory,
+            remoteHost: host, model: m,
             permissionMode: permission, effort: effort,
             appendSystemPrompt: convInstructions,
             streamPartial: settings.streamPartialMessages, sessionId: "<uuid>",
-            maxOutputTokens: settings.maxOutputTokens)
-        let cmd = "claude " + config.cliArguments(resume: false, forDisplay: true)
-            .joined(separator: " ")
-        // Two-step launch, like a human at a terminal: minimal command first,
-        // then the session-level tuning sent as in-band slash commands.
-        return "cd \"\(workingDirectory)\"\n\(env)\(cmd)\n> /effort \(effort.cliValue)"
+            maxOutputTokens: settings.maxOutputTokens,
+            extraEnv: env, reverseTunnelOptions: tunnel)
+        return SessionConfig.displayCommand(config: config, resumed: false)
     }
 
+    /// `~` shorthand only makes sense for a path on THIS Mac — a remote home
+    /// isn't this one, so remote paths are shown in full.
     private func displayPath(_ path: String) -> String {
+        guard workHost == nil else { return path }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
-    }
-
-    private func chooseFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.directoryURL = URL(fileURLWithPath: workingDirectory)
-        if panel.runModal() == .OK, let url = panel.url {
-            workingDirectory = url.path
-        }
     }
 
     private func start() {
@@ -248,7 +269,7 @@ struct NewConversationSheet: View {
         // record where it actually talks, not what happened to be typed.
         let server = resolvedServerURL ?? settings.ollamaBaseURL
         settings.selectedModelId = modelId
-        settings.workingDirectory = workingDirectory
+        settings.workLocation = WorkLocation(hostId: workHostId, path: workingDirectory)
         settings.permissionMode = permission
         settings.effortLevel = effort
         settings.ollamaBaseURL = server             // seed for the next sheet

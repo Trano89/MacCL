@@ -13,6 +13,16 @@ final class AppSettings: ObservableObject {
     @Published var workingDirectory: String {
         didSet { defaults.set(workingDirectory, forKey: "workingDirectory") }
     }
+    /// Which machine `workingDirectory` belongs to: "" = this Mac, otherwise the
+    /// id of an `SSHHost`. Kept beside the path rather than folded into it so a
+    /// conversation saved before SSH existed still reads as local.
+    @Published var workLocationHostId: String {
+        didSet { defaults.set(workLocationHostId, forKey: "workLocationHostId") }
+    }
+    /// Saved SSH machines — JSON-encoded array of SSHHost (never any password).
+    @Published var sshHostsRaw: String {
+        didSet { defaults.set(sshHostsRaw, forKey: "sshHosts") }
+    }
     @Published var selectedModelId: String {
         didSet { defaults.set(selectedModelId, forKey: "selectedModelId") }
     }
@@ -95,6 +105,8 @@ final class AppSettings: ObservableObject {
         claudePathOverride = defaults.string(forKey: "claudePathOverride") ?? ""
         workingDirectory = defaults.string(forKey: "workingDirectory")
             ?? FileManager.default.homeDirectoryForCurrentUser.path
+        workLocationHostId = defaults.string(forKey: "workLocationHostId") ?? ""
+        sshHostsRaw = defaults.string(forKey: "sshHosts") ?? "[]"
         selectedModelId = defaults.string(forKey: "selectedModelId") ?? "anthropic:opus"
         permissionModeRaw = defaults.string(forKey: "permissionModeRaw")
             ?? PermissionMode.bypassPermissions.rawValue
@@ -115,6 +127,15 @@ final class AppSettings: ObservableObject {
     var language: AppLanguage {
         get { AppLanguage(rawValue: languageRaw) ?? .en }
         set { languageRaw = newValue.rawValue }
+    }
+
+    /// Where the current conversation's files live (this Mac, or an SSH host).
+    var workLocation: WorkLocation {
+        get { WorkLocation(hostId: workLocationHostId, path: workingDirectory) }
+        set {
+            workingDirectory = newValue.path
+            workLocationHostId = newValue.hostId
+        }
     }
 
     var permissionMode: PermissionMode {

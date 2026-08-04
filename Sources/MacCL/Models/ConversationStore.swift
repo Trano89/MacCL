@@ -9,6 +9,10 @@ struct Conversation: Identifiable, Codable {
     var updatedAt: Date
     var modelId: String
     var workingDirectory: String
+    /// The machine `workingDirectory` lives on: nil/empty = this Mac, otherwise
+    /// an `SSHHost` id. Optional so conversations saved before SSH existed keep
+    /// decoding — and correctly read as local.
+    var sshHostId: String?
     // Per-conversation launch parameters (optional: older files lack them).
     var permissionMode: String?
     var effort: String?

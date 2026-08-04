@@ -217,6 +217,19 @@ final class ChatViewModel: ObservableObject {
             ?? LLMModel(id: "anthropic:opus", provider: .anthropic, name: "Claude Opus 4.8", modelArg: "opus", subtitle: nil)
     }
 
+    /// The machine this conversation's working directory lives on — nil when
+    /// it's this Mac. Resolved from the store on every read so a host deleted
+    /// mid-conversation degrades to "local" instead of dangling.
+    var remoteHost: SSHHost? {
+        SSHHostStore.shared.host(id: settings.workLocationHostId)
+    }
+
+    /// The conversation points at an SSH host that no longer exists in the
+    /// settings — the working directory is a remote path with nothing to reach it.
+    var hasOrphanedHost: Bool {
+        !settings.workLocationHostId.isEmpty && remoteHost == nil
+    }
+
     var canSend: Bool {
         let hasText = !composer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return (hasText || !attachments.isEmpty) && !isRunning && !isBlockedByServer
@@ -250,6 +263,17 @@ final class ChatViewModel: ObservableObject {
             conversationCreatedAt = Date()
         }
         appendItem(.user(text: text, attachments: atts))
+        // Images and text files travel inside the message, so they work anywhere.
+        // A `.other` attachment is sent as a PATH for the agent to Read — and
+        // that path exists on this Mac, not on the machine the agent runs on.
+        if remoteHost != nil {
+            let unreachable = atts.filter { $0.kind == .other }
+            if !unreachable.isEmpty {
+                appendNotice(.warning,
+                             L10n.t("ssh_local_attachment",
+                                    unreachable.map(\.filename).joined(separator: ", ")))
+            }
+        }
         persist()
         Task { await launchOrContinue(blocks) }
     }
@@ -392,6 +416,10 @@ final class ChatViewModel: ObservableObject {
         // Restore the conversation's own parameters so a follow-up runs with the
         // exact same launch configuration (server, model, cwd, permissions, effort).
         settings.workingDirectory = convo.workingDirectory
+        // …including WHICH machine that directory is on. A host the user has
+        // since deleted falls back to local rather than pointing at nothing:
+        // remoteHost() re-checks the store and the banner explains the gap.
+        settings.workLocationHostId = convo.sshHostId ?? ""
         // Its bound server first (older files: fall back to the last-used one) —
         // the model list depends on it.
         conversationServerURL = convo.serverURL ?? settings.ollamaBaseURL
@@ -434,6 +462,7 @@ final class ChatViewModel: ObservableObject {
             updatedAt: Date(),
             modelId: settings.selectedModelId,
             workingDirectory: settings.workingDirectory,
+            sshHostId: settings.workLocationHostId.isEmpty ? nil : settings.workLocationHostId,
             permissionMode: settings.permissionModeRaw,
             effort: settings.effortLevelRaw,
             serverURL: conversationServerURL,
@@ -516,11 +545,27 @@ final class ChatViewModel: ObservableObject {
     // MARK: - Launch
 
     private func launchOrContinue(_ blocks: [[String: Any]]) async {
-        guard let claudePath = BinaryLocator.find("claude", override: settings.claudePathOverride) else {
-            claudeAvailable = false
-            appendNotice(.error, L10n.t("binary_not_found"))
+        // Which machine runs the agent. Local needs a `claude` on THIS Mac;
+        // remote needs one over there instead — checked further down, once,
+        // when the session actually has to be spawned.
+        let remote = remoteHost
+        // The conversation records a host that has since been deleted. Running
+        // it locally would point a remote path at this Mac's filesystem, so it
+        // stops here and says which machine is missing.
+        if remote == nil, !settings.workLocationHostId.isEmpty {
+            appendNotice(.error, L10n.t("ssh_host_gone"))
             isRunning = false
             return
+        }
+        var claudePath = ""
+        if remote == nil {
+            guard let path = BinaryLocator.find("claude", override: settings.claudePathOverride) else {
+                claudeAvailable = false
+                appendNotice(.error, L10n.t("binary_not_found"))
+                isRunning = false
+                return
+            }
+            claudePath = path
         }
         claudeAvailable = true
 
@@ -563,11 +608,48 @@ final class ChatViewModel: ObservableObject {
             return
         }
 
+        // A remote session is about to be spawned: confirm the machine answers
+        // and actually carries `claude` BEFORE the turn is committed to it.
+        // Failing here costs one probe; failing later costs the user's message.
+        var host = remote
+        if var h = host {
+            statusLine = L10n.t("ssh_connecting", h.label)
+            switch await SSHClient.probe(h) {
+            case .failure(let failure):
+                appendNotice(.error, L10n.t("ssh_launch_failed", h.label) + " — " + failure.message)
+                statusLine = L10n.t("ssh_unreachable", h.label)
+                isRunning = false
+                return
+            case .success(let probe):
+                guard probe.hasClaude else {
+                    appendNotice(.error, SSHClient.Failure.claudeMissing.message)
+                    statusLine = L10n.t("ssh_unreachable", h.label)
+                    isRunning = false
+                    return
+                }
+                // Pin the absolute path we just resolved: the streaming session
+                // runs with a non-interactive PATH and must not re-guess.
+                h.remoteClaudePath = probe.claudePath
+                SSHHostStore.shared.rememberClaudePath(probe.claudePath, forHost: h.id)
+                host = h
+            }
+        }
+
+        // An Ollama on THIS Mac is not reachable from the remote machine, where
+        // `localhost` means something else entirely. Forward the port instead of
+        // letting the address silently resolve to whatever runs over there.
+        var tunnelOptions: [String] = []
+        if host != nil, model.provider != .anthropic,
+           let tunnel = SSHClient.reverseTunnel(forServerURL: conversationServerURL) {
+            tunnelOptions = tunnel.options
+        }
+
         let sid = sessionId ?? UUID().uuidString
         sessionId = sid
         let config = SessionConfig(
             claudePath: claudePath,
             workingDirectory: settings.workingDirectory,
+            remoteHost: host,
             model: model,
             permissionMode: settings.permissionMode,
             effort: settings.effortLevel,
@@ -575,7 +657,8 @@ final class ChatViewModel: ObservableObject {
             streamPartial: settings.streamPartialMessages,
             sessionId: sid,
             maxOutputTokens: settings.maxOutputTokens,
-            extraEnv: extraEnv
+            extraEnv: extraEnv,
+            reverseTunnelOptions: tunnelOptions
         )
         do {
             // (This is where the old epoch was reset WITHOUT rewiring — which
@@ -584,6 +667,8 @@ final class ChatViewModel: ObservableObject {
             let resumed = resumeOnNextStart
             AppLog.write("session", "start model=\(model.modelArg) provider=\(model.provider.rawValue) "
                          + "base=\(extraEnv["ANTHROPIC_BASE_URL"] ?? "anthropic") "
+                         + "where=\(host.map { "ssh:" + $0.detailedTarget } ?? "local") "
+                         + "tunnel=\(tunnelOptions.isEmpty ? "no" : "yes") "
                          + "effort=\(settings.effortLevel.cliValue) resume=\(resumed)")
             // Reasoning level travels in-band, not as a launch flag: applied
             // before the first turn, changeable any time via the effort button.
@@ -594,31 +679,30 @@ final class ChatViewModel: ObservableObject {
             resumeOnNextStart = false
             // One compact line in the transcript; the full copy-pastable command
             // lives in the notice's detail (tooltip + expandable).
-            let host = URL(string: conversationServerURL)?.host ?? "anthropic"
-            let where_ = model.provider == .anthropic ? "Anthropic" : host
+            let serverHost = URL(string: conversationServerURL)?.host ?? "anthropic"
+            let where_ = model.provider == .anthropic ? "Anthropic" : serverHost
+            // Which machine the agent's tools act on is worth saying out loud:
+            // "Bash" and "Edit" mean very different things on someone's server.
+            let onMachine = host.map { " · ⇄ " + $0.label } ?? ""
             appendNotice(.info,
-                         "$ claude --model \(model.modelArg) · \(where_)"
+                         "$ claude --model \(model.modelArg) · \(where_)\(onMachine)"
                          + (resumed ? " · resume" : ""),
                          detail: launchCommandLine(config: config, resumed: resumed))
+        } catch let failure as SSHClient.Failure {
+            appendNotice(.error, L10n.t("ssh_launch_failed", host?.label ?? "")
+                         + " — " + failure.message)
+            statusLine = L10n.t("ssh_unreachable", host?.label ?? "")
+            isRunning = false
         } catch {
             appendNotice(.error, L10n.t("launch_failed"))
             isRunning = false
         }
     }
 
-    /// The literal terminal command this session runs — same builder as the
+    /// The literal terminal command this session runs — same builders as the
     /// real spawn, so the display can never drift from what actually executes.
     private func launchCommandLine(config: SessionConfig, resumed: Bool) -> String {
-        let env = config.extraEnv
-            .sorted { $0.key < $1.key }
-            .map { "\($0.key)=\($0.value)" }
-            .joined(separator: " ")
-        // The real binary path, not a bare "claude": a CLI installed outside
-        // the PATH would otherwise be misreported.
-        let cmd = config.claudePath + " " + config.cliArguments(resume: resumed, forDisplay: true)
-            .joined(separator: " ")
-        let prefix = env.isEmpty ? "" : env + " "
-        return "$ cd \"\(config.workingDirectory)\"\n$ \(prefix)\(cmd)\n> /effort \(config.effort.cliValue)"
+        SessionConfig.displayCommand(config: config, resumed: resumed)
     }
 
     // MARK: - Event handling
