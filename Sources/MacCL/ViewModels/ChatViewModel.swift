@@ -141,8 +141,12 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
-    /// Sub-agents still working — drives the badge on the panel toggle.
-    var runningAgentCount: Int { agents.filter(\.isRunning).count }
+    /// Sub-agents still working — drives the badge on the panel toggle. Takes
+    /// the CLI's own task protocol when it has spoken, since a Task card stays
+    /// "running" until its tool_result lands, which can lag the real state.
+    var runningAgentCount: Int {
+        backgroundTasks.isEmpty ? agents.filter(\.isRunning).count : runningTaskCount
+    }
 
     // MARK: - Conversations left working in the background
 
@@ -228,14 +232,90 @@ final class ChatViewModel: ObservableObject {
         receivedContentThisTurn = true
         waitingHint = nil
         guard env.type == "assistant" else { return }
+        var lines = agentActivity[parent] ?? []
         for block in env.message?.content ?? [] {
-            if case .toolUse(_, let name, let input) = block {
+            switch block {
+            case .toolUse(_, let name, let input):
                 let headline = ToolActivity(toolUseId: "", name: name, input: input).headline
-                var lines = agentActivity[parent] ?? []
                 lines.append("⚒ \(name) — \(headline)")
-                if lines.count > 40 { lines.removeFirst(lines.count - 40) }
-                agentActivity[parent] = lines
+            // Text and reasoning used to be dropped, so an agent that wrote
+            // instead of calling tools showed absolutely nothing: it looked
+            // stalled for as long as it worked. Sub-agents get no token-level
+            // stream_events (verified), so one line per finished message is the
+            // finest granularity the CLI offers.
+            case .text(let t) where !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty:
+                lines.append("› " + Self.oneLine(t))
+            case .thinking(let t) where !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty:
+                lines.append("… " + Self.oneLine(t))
+            default:
+                break
             }
+        }
+        guard lines.count != (agentActivity[parent]?.count ?? 0) else { return }
+        if lines.count > 60 { lines.removeFirst(lines.count - 60) }
+        agentActivity[parent] = lines
+        // Keep the authoritative task entry's live line in sync for the header.
+        if let idx = backgroundTasks.firstIndex(where: { $0.toolUseId == parent }) {
+            backgroundTasks[idx].lastLine = lines.last
+        }
+    }
+
+    /// Collapse a message to a single readable line for the activity feed.
+    private static func oneLine(_ text: String) -> String {
+        let flat = text.replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "  ", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return flat.count > 160 ? String(flat.prefix(160)) + "…" : flat
+    }
+
+    // MARK: - Background tasks (the CLI's own sub-agent protocol)
+
+    /// A sub-agent as the CLI itself reports it, through `system/task_started`,
+    /// `task_updated` and `task_notification`. This is what actually answers
+    /// "is an agent running, and where is it?" — the Task tool card alone only
+    /// says one was launched.
+    struct BackgroundTask: Identifiable, Equatable {
+        let id: String              // task_id
+        let toolUseId: String?
+        var description: String
+        var subagentType: String?
+        var status: String          // "running" until the CLI says otherwise
+        var startedAt: Date
+        var lastLine: String?
+        var summary: String?
+        var isRunning: Bool { status == "running" }
+    }
+
+    @Published var backgroundTasks: [BackgroundTask] = []
+
+    /// Sub-agents the CLI reports as still working.
+    var runningTaskCount: Int { backgroundTasks.filter(\.isRunning).count }
+
+    private func handleTaskEvent(_ env: StreamEnvelope) {
+        switch env.subtype {
+        case "task_started":
+            guard let id = env.taskId else { return }
+            let task = BackgroundTask(id: id, toolUseId: env.toolUseId,
+                                      description: env.description ?? L10n.t("agents_title"),
+                                      subagentType: env.subagentType,
+                                      status: "running", startedAt: Date(),
+                                      lastLine: nil, summary: nil)
+            if let idx = backgroundTasks.firstIndex(where: { $0.id == id }) {
+                backgroundTasks[idx] = task
+            } else {
+                backgroundTasks.append(task)
+            }
+        case "task_updated":
+            guard let id = env.taskId,
+                  let idx = backgroundTasks.firstIndex(where: { $0.id == id }) else { return }
+            if let s = env.patch?["status"]?.asString { backgroundTasks[idx].status = s }
+        case "task_notification":
+            guard let id = env.taskId,
+                  let idx = backgroundTasks.firstIndex(where: { $0.id == id }) else { return }
+            if let s = env.status { backgroundTasks[idx].status = s }
+            if let s = env.summary { backgroundTasks[idx].summary = s }
+        default:
+            break
         }
     }
 
@@ -767,6 +847,12 @@ final class ChatViewModel: ObservableObject {
         if env.type != "stream_event" { flushStream() }
         switch env.type {
         case "system":
+            // The CLI's background-task protocol: the only authoritative source
+            // on which sub-agents are alive right now.
+            if let s = env.subtype, s.hasPrefix("task_") {
+                handleTaskEvent(env)
+                return
+            }
             if env.subtype == "init" {
                 sessionId = env.sessionId ?? sessionId
                 let model = env.model ?? selectedModel.name

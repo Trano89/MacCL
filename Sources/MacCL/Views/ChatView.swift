@@ -214,20 +214,29 @@ struct ChatView: View {
     /// clicking a Task card in the transcript, so it was effectively invisible;
     /// viewing sub-agents stays entirely optional.
     private var agentsButton: some View {
-        Button {
+        let running = vm.runningAgentCount
+        return Button {
             withAnimation { vm.showAgentsPanel.toggle() }
         } label: {
-            Label {
-                Text(L10n.t("agents_title"))
-            } icon: {
-                Image(systemName: vm.runningAgentCount > 0
-                      ? "person.2.badge.gearshape.fill" : "person.2")
+            HStack(spacing: 5) {
+                Image(systemName: "person.2")
+                // The count goes IN the label: `.badge()` is silently ignored
+                // outside a List or a TabView, so it showed nothing at all.
+                if running > 0 {
+                    Text("\(running)")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Color.orange, in: Capsule())
+                    Text(L10n.t("agents_working"))
+                } else {
+                    Text(L10n.t("agents_title"))
+                }
             }
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .tint(vm.showAgentsPanel ? Theme.accent : nil)
-        .badge(vm.runningAgentCount)
+        .tint(running > 0 ? .orange : (vm.showAgentsPanel ? Theme.accent : nil))
         .help(L10n.t("agents_panel_help"))
     }
 

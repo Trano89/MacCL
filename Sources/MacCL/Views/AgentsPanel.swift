@@ -24,8 +24,39 @@ struct AgentsPanel: View {
             .padding(12)
             Divider()
 
+            // What the CLI itself says is running, first and always visible —
+            // independent of the Task cards, which only appear once the tool
+            // call has been parsed and stay "running" until their result lands.
+            let live = vm.backgroundTasks.filter(\.isRunning)
+            if !live.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(live) { task in
+                        HStack(alignment: .top, spacing: 8) {
+                            ProgressView().controlSize(.small).scaleEffect(0.6)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(task.description)
+                                    .font(.callout.weight(.medium))
+                                    .lineLimit(2)
+                                if let line = task.lastLine {
+                                    Text(verbatim: line)
+                                        .font(.system(.caption2, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                        .truncationMode(.middle)
+                                }
+                            }
+                            Spacer(minLength: 0)
+                        }
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.10))
+                Divider()
+            }
+
             let agents = vm.agents
-            if agents.isEmpty {
+            if agents.isEmpty && live.isEmpty {
                 Spacer()
                 Text(L10n.t("agents_empty"))
                     .foregroundStyle(.secondary)
@@ -89,6 +120,20 @@ private struct AgentCard: View {
             }
             .buttonStyle(.plain)
             .padding(10)
+
+            // What it is doing right now, always visible: the detail used to be
+            // hidden until you expanded the card, so a running agent showed a
+            // dot and nothing else.
+            if !isSelected, let last = activity.last {
+                Text(verbatim: last)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 8)
+            }
 
             if isSelected {
                 Divider()
