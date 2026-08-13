@@ -162,6 +162,10 @@ final class ChatViewModel: ObservableObject {
     @Published var serverUnavailable = false
     /// Re-probes the bound server while it's unavailable, to unblock automatically.
     private var serverWatchTask: Task<Void, Never>?
+    /// The base URL the LIVE `claude` process was spawned with. A child's
+    /// environment is fixed at exec, so this is the only honest answer to
+    /// "where is this session actually sending its requests".
+    private var sessionBackendURL: String?
 
     init(settings: AppSettings) {
         self.settings = settings
@@ -380,6 +384,7 @@ final class ChatViewModel: ObservableObject {
         // until then, clear any stale block from the previous conversation.
         serverUnavailable = false
         serverWatchTask?.cancel()
+        sessionBackendURL = nil
     }
 
     /// Load a conversation from history. Continuing it resumes the claude session.
@@ -425,6 +430,7 @@ final class ChatViewModel: ObservableObject {
         conversationServerURL = convo.serverURL ?? settings.ollamaBaseURL
         serverUnavailable = false
         serverWatchTask?.cancel()
+        sessionBackendURL = nil
         conversationInstructions = convo.instructions ?? ""
         currentGroup = convo.group
         if let pm = convo.permissionMode { settings.permissionModeRaw = pm }
@@ -601,9 +607,19 @@ final class ChatViewModel: ObservableObject {
             return
         }
 
-        let extraEnv = ModelRouter.shared.environment(for: model, serverURL: conversationServerURL)
+        // Where `claude` will actually send its requests. Normally the
+        // conversation's own server; the fan-out router only when a sub-agent
+        // names another machine.
+        let backend = await resolveBackendURL(for: model)
+        let extraEnv = ModelRouter.shared.environment(for: model, serverURL: backend.url)
 
         if session.isRunning {
+            // The live process holds the base URL it was spawned with, so a
+            // sub-agent that has since moved machine cannot be honoured now.
+            // Say it rather than dispatching the turn somewhere it won't work.
+            if let launched = sessionBackendURL, launched != backend.url {
+                appendNotice(.warning, L10n.t("router_needs_restart"))
+            }
             session.send(content: blocks)
             return
         }
@@ -640,7 +656,7 @@ final class ChatViewModel: ObservableObject {
         // letting the address silently resolve to whatever runs over there.
         var tunnelOptions: [String] = []
         if host != nil, model.provider != .anthropic,
-           let tunnel = SSHClient.reverseTunnel(forServerURL: conversationServerURL) {
+           let tunnel = SSHClient.reverseTunnel(forServerURL: backend.url) {
             tunnelOptions = tunnel.options
         }
 
@@ -657,6 +673,7 @@ final class ChatViewModel: ObservableObject {
             streamPartial: settings.streamPartialMessages,
             sessionId: sid,
             maxOutputTokens: settings.maxOutputTokens,
+            maxConcurrentSubagents: settings.maxConcurrentSubagents,
             extraEnv: extraEnv,
             reverseTunnelOptions: tunnelOptions
         )
@@ -677,6 +694,13 @@ final class ChatViewModel: ObservableObject {
             try session.start(config: config, firstContent: blocks,
                               resume: resumed, preCommands: preCommands)
             resumeOnNextStart = false
+            sessionBackendURL = backend.url
+            // Routing is never hidden: when the turn fans out to other machines,
+            // the transcript says which ones.
+            if !backend.routedServers.isEmpty {
+                appendNotice(.info, L10n.t("router_active",
+                                           backend.routedServers.joined(separator: ", ")))
+            }
             // One compact line in the transcript; the full copy-pastable command
             // lives in the notice's detail (tooltip + expandable).
             let serverHost = URL(string: conversationServerURL)?.host ?? "anthropic"
@@ -696,6 +720,48 @@ final class ChatViewModel: ObservableObject {
         } catch {
             appendNotice(.error, L10n.t("launch_failed"))
             isRunning = false
+        }
+    }
+
+    /// Decide the address `claude` should be pointed at for this turn.
+    ///
+    /// The default answer is the conversation's own server, unchanged and with
+    /// nothing in the way — a conversation whose sub-agents all share its server
+    /// pays no hop at all. `AgentRouter` is started only when a sub-agent's
+    /// model carries an `@machine` suffix, because that is the only case a
+    /// single `ANTHROPIC_BASE_URL` cannot express.
+    private func resolveBackendURL(for model: LLMModel) async
+        -> (url: String, routedServers: [String]) {
+        guard model.provider != .anthropic else { return (conversationServerURL, []) }
+
+        await AgentStore.shared.loadIfNeeded(location: settings.workLocation)
+        let needed = AgentStore.shared.referencedServerNames
+        guard !needed.isEmpty else { return (conversationServerURL, []) }
+
+        let known = settings.standbyServers
+        var byName: [String: String] = [:]
+        for name in needed {
+            if let server = known.first(where: { $0.name == name }) { byName[name] = server.url }
+        }
+        let missing = needed.subtracting(byName.keys).sorted()
+        if !missing.isEmpty {
+            appendNotice(.warning, L10n.t("agents_unknown_server",
+                                          missing.joined(separator: ", ")))
+        }
+        guard !byName.isEmpty else { return (conversationServerURL, []) }
+
+        do {
+            let base = try await AgentRouter.shared.start(route: .init(
+                defaultUpstream: conversationServerURL,
+                byServerName: byName,
+                maxConcurrentPerServer: settings.maxConcurrentPerServer))
+            return (base, byName.keys.sorted())
+        } catch {
+            // Falling back to the conversation's server would send every routed
+            // sub-agent to a machine that doesn't have its model. Say so, and
+            // let the turn run with whatever still works.
+            appendNotice(.error, L10n.t("router_failed", error.localizedDescription))
+            return (conversationServerURL, [])
         }
     }
 

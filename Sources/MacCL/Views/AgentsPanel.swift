@@ -5,6 +5,16 @@ import SwiftUI
 /// while agents run.
 struct AgentsPanel: View {
     @ObservedObject var vm: ChatViewModel
+    @ObservedObject private var store = AgentStore.shared
+
+    /// Which model, and which machine, this sub-agent's definition sends it to.
+    /// Nil for a built-in agent type, which simply inherits the conversation's.
+    private func backend(for agent: ChatViewModel.AgentInfo) -> String? {
+        guard let type = agent.type,
+              let def = store.agents.first(where: { $0.name == type }),
+              !def.model.isEmpty else { return nil }
+        return def.serverName.isEmpty ? def.model : "\(def.model) · \(def.serverName)"
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -37,6 +47,7 @@ struct AgentsPanel: View {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(agents) { agent in
                             AgentCard(agent: agent,
+                                      backend: backend(for: agent),
                                       activity: vm.agentActivity[agent.id] ?? [],
                                       isSelected: vm.selectedAgentId == agent.id) {
                                 vm.selectedAgentId = vm.selectedAgentId == agent.id ? nil : agent.id
@@ -55,6 +66,8 @@ struct AgentsPanel: View {
 /// when selected.
 private struct AgentCard: View {
     let agent: ChatViewModel.AgentInfo
+    /// "model · machine" when the agent's definition overrides them.
+    let backend: String?
     let activity: [String]
     let isSelected: Bool
     let onSelect: () -> Void
@@ -78,6 +91,15 @@ private struct AgentCard: View {
                             Text(statusText)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                        }
+                        // Which brain actually answered. Without it, a sub-agent
+                        // routed to another machine looks exactly like one that
+                        // silently fell back to the conversation's model.
+                        if let backend {
+                            Label(backend, systemImage: "cpu")
+                                .font(.caption2)
+                                .foregroundStyle(Theme.accent)
+                                .lineLimit(1)
                         }
                     }
                     Spacer(minLength: 4)

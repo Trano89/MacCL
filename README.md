@@ -35,6 +35,7 @@ One more thing worth knowing: **each conversation is tied to the server you pick
 - Persistent conversations with resume, grouping, and running cost
 - Any model, per conversation: Anthropic (Opus, Sonnet, Haiku, Fable) or Ollama — with automatic discovery of servers on your network
 - Work on a **remote machine over SSH**: connect with user, address and password, browse its folders from inside the app, and the agent runs *there*
+- **Sub-agents on their own brain**: give a delegated task a different model — or a different machine entirely — and choose whether they run one at a time or side by side
 - Live view of the model's reasoning; effort level adjustable mid-conversation
 - Live token gauge per conversation, with one-click context compaction when it grows too big
 - Attachments: images (for vision models), text files, anything else by reference
@@ -93,6 +94,16 @@ Passwords are stored in the macOS Keychain, never in the preferences or the conv
 
 > If the model is an Ollama running on *this* Mac, MacCL opens a reverse tunnel so the remote agent reaches it — because `localhost` means something else once the agent is elsewhere. If the tunnel can't be established, the session fails loudly rather than silently talking to a different Ollama.
 
+**Sub-agents** — the *Sub-agents* button next to Instructions. When the agent delegates a task, that sub-agent doesn't have to think with the same brain as the conversation: give it a small fast model for grunt work, or send it to the machine with the big GPU while the main conversation stays here.
+
+Each sub-agent is a `.claude/agents/<name>.md` file in your working folder — Claude Code's own format, which the CLI reads by itself. MacCL just writes it, and fills the model list from the machine you picked, so an agent can never be pointed at a model that isn't installed there. On a remote project the file is written on the remote machine, because that's where the agent runs.
+
+Sending a sub-agent to *another* machine is the one thing a plain `claude` cannot do: a process has a single backend address. MacCL adds a `@machine` suffix to the model name (`qwen3-coder:30b@nas`) and runs a small loopback router that reads it and forwards the request there. The router only starts when an agent actually names another machine — otherwise nothing sits between the CLI and your server. A suffix naming a machine you haven't configured is refused outright, never quietly sent somewhere else, and the transcript names every machine a turn fanned out to.
+
+**How many at once** — same panel. The CLI's own default is 20 simultaneous sub-agents, a number written for a cloud API; MacCL sets 2, and 1 means strictly one at a time. Remote machines get their own separate allowance, since a second box is a second pool of RAM.
+
+> Worth checking before you blame the app: if your Ollama runs with `OLLAMA_MAX_LOADED_MODELS=1` (a common default), only one model is resident at a time, so every hop between the conversation's model and a sub-agent's evicts and reloads — measured at 110 s per swap against 7 s when both stay loaded. Raise it to at least 2, and keep `OLLAMA_CONTEXT_LENGTH` sane: at 262144 a single 4B model reserves over 40 GB, and nothing else fits.
+
 **Coding instructions** — sidebar → *Manage instructions*: Markdown files you edit inside the app, ticked to be injected into the system prompt. A conversation can also get its own instructions when you create it. The project `CLAUDE.md` tab edits the file in the working folder — on the remote machine too, when that's where you're working.
 
 **Permissions** — from fully autonomous (*all tools*) to plan-only (the agent thinks but never executes), chosen per conversation.
@@ -105,7 +116,7 @@ Passwords are stored in the macOS Keychain, never in the preferences or the conv
 Sources/MacCL/
 ├── App/              SwiftUI entry point + Settings window
 ├── Models/           Protocol decoding, model catalog, settings, persistence
-├── Engine/           ClaudeSession (drives the CLI), SSHClient, OllamaClient, discovery
+├── Engine/           ClaudeSession (drives the CLI), SSHClient, OllamaClient, AgentRouter, discovery
 ├── ViewModels/       ChatViewModel (conversation orchestration)
 └── Views/            Sidebar, chat, message rows, tool cards, Settings…
 ```

@@ -554,6 +554,71 @@ enum SSHClient {
         }
     }
 
+    /// Names of the files directly inside `directory` that end in `suffix`.
+    /// A directory that doesn't exist yet lists as empty rather than failing:
+    /// a project simply has no sub-agents until the first one is written.
+    static func listFiles(_ host: SSHHost, directory: String,
+                          suffix: String) async -> Result<[String], Failure> {
+        let script = """
+        [ -d "$1" ] || exit 0
+        cd -- "$1" 2>/dev/null || exit 0
+        for e in *"$2"; do
+          [ -f "$e" ] || continue
+          printf 'F\\t%s\\n' "$e"
+        done
+        """
+        let result = await run(host, command: loginShellCommand(script,
+                                                                arguments: [directory, suffix]))
+        switch result {
+        case .failure(let f):
+            return .failure(f)
+        case .success(let out):
+            let names = out.stdout.split(separator: "\n").compactMap { line -> String? in
+                let parts = line.split(separator: "\t", maxSplits: 1)
+                guard parts.count == 2, parts[0] == "F" else { return nil }
+                return String(parts[1])
+            }
+            return .success(names)
+        }
+    }
+
+    /// Like `writeFile`, but creates the parent directories first. Agent
+    /// definitions live in `.claude/agents/`, which a fresh project doesn't have.
+    static func writeFileCreatingParents(_ host: SSHHost, path: String,
+                                         content: String) async -> Result<Void, Failure> {
+        let script = """
+        d=$(dirname -- "$1")
+        mkdir -p -- "$d" || exit 5
+        t="$1.maccl.$$"
+        cat > "$t" || { rm -f "$t"; exit 5; }
+        chmod 644 "$t" 2>/dev/null
+        mv -- "$t" "$1" || { rm -f "$t"; exit 5; }
+        """
+        let result = await run(host, command: loginShellCommand(script, arguments: [path]),
+                               stdin: Data(content.utf8), timeout: 30)
+        switch result {
+        case .failure(let f):
+            return .failure(f)
+        case .success(let out):
+            guard out.status == 0 else { return .failure(.permissionDenied(path)) }
+            return .success(())
+        }
+    }
+
+    /// Delete a remote file. Already-absent counts as success — the caller
+    /// wanted it gone, and it is.
+    static func deleteFile(_ host: SSHHost, path: String) async -> Result<Void, Failure> {
+        let result = await run(host, command: loginShellCommand("rm -f -- \"$1\"",
+                                                                arguments: [path]))
+        switch result {
+        case .failure(let f):
+            return .failure(f)
+        case .success(let out):
+            guard out.status == 0 else { return .failure(.permissionDenied(path)) }
+            return .success(())
+        }
+    }
+
     // MARK: - Host keys
 
     enum HostKeyState: Equatable, Sendable {

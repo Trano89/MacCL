@@ -6,8 +6,10 @@ struct ChatView: View {
     @ObservedObject var vm: ChatViewModel
     @EnvironmentObject var settings: AppSettings
     @ObservedObject private var instructions = InstructionsStore.shared
+    @ObservedObject private var agentStore = AgentStore.shared
     @FocusState private var composerFocused: Bool
     @State private var showInstructions = false
+    @State private var showAgentsLibrary = false
     @State private var showSlashCommands = false
     @State private var showModelPicker = false
     @State private var showServerPicker = false
@@ -173,6 +175,15 @@ struct ChatView: View {
         .sheet(isPresented: $showInstructions) {
             InstructionsView()
         }
+        .sheet(isPresented: $showAgentsLibrary) {
+            AgentsLibraryView(conversationServerURL: vm.conversationServerURL,
+                              workLocation: settings.workLocation)
+        }
+        // The agent list belongs to the working folder, so it has to be re-read
+        // whenever that folder (or the machine it's on) changes.
+        .task(id: settings.workLocationHostId + "\u{1F}" + settings.workingDirectory) {
+            await agentStore.load(location: settings.workLocation)
+        }
     }
 
     /// Claude Code slash commands, inserted into the composer.
@@ -205,6 +216,7 @@ struct ChatView: View {
             effortMenu
             folderButton
             instructionsButton
+            agentsButton
             Spacer(minLength: 0)
             tokenChip
         }
@@ -395,6 +407,22 @@ struct ChatView: View {
         .buttonStyle(.bordered)
         .controlSize(.small)
         .help(L10n.t("instructions_help"))
+    }
+
+    /// The working folder's sub-agents. The count is worth showing: an agent
+    /// only exists as a file, so "none" and "not saved" look identical without it.
+    private var agentsButton: some View {
+        Button {
+            showAgentsLibrary = true
+        } label: {
+            Label(agentStore.agents.isEmpty
+                  ? L10n.t("agents_library")
+                  : "\(L10n.t("agents_library")) · \(agentStore.agents.count)",
+                  systemImage: "person.2.badge.gearshape")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .help(L10n.t("agents_library_empty"))
     }
 
     /// Just the folder locally; prefixed with the machine when it's elsewhere,

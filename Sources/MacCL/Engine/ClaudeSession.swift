@@ -18,6 +18,8 @@ struct SessionConfig {
     var sessionId: String
     /// Cap on one reply's output tokens. 0 = leave the CLI's own default alone.
     var maxOutputTokens: Int = 64_000
+    /// How many sub-agents may run at once. 0 = leave the CLI's default (20).
+    var maxConcurrentSubagents: Int = 2
     /// Extra environment (points `claude` at the conversation's Ollama server).
     var extraEnv: [String: String] = [:]
     /// Reverse-tunnel options when the conversation's Ollama runs on this Mac and
@@ -50,6 +52,13 @@ struct SessionConfig {
         // whole prefix.
         if inherited["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == nil {
             env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+        }
+        // The CLI lets 20 sub-agents run at once by default. Against one Ollama
+        // server that is a stampede: each turn wants the model resident, and a
+        // server holding one model at a time (the common config) spends its life
+        // evicting and reloading — 110 s per swap, measured.
+        if inherited["CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS"] == nil, maxConcurrentSubagents > 0 {
+            env["CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS"] = String(maxConcurrentSubagents)
         }
         for (k, v) in extraEnv { env[k] = v }
         return env

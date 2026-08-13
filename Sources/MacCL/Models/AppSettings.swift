@@ -86,6 +86,20 @@ final class AppSettings: ObservableObject {
     @Published var standbyServersRaw: String {
         didSet { defaults.set(standbyServersRaw, forKey: "standbyServers") }
     }
+    /// How many sub-agents may run at once (CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS).
+    ///
+    /// The CLI's own default is 20, which is a number written for a cloud API,
+    /// not for one Ollama box: twenty simultaneous turns against a single server
+    /// queue behind each other and evict each other's models. 1 is strictly
+    /// serial; the app defaults to 2 — one sub-agent alongside the main loop.
+    @Published var maxConcurrentSubagents: Int {
+        didSet { defaults.set(maxConcurrentSubagents, forKey: "maxConcurrentSubagents") }
+    }
+    /// Same cap, but applied per remote machine by `AgentRouter`. A second box
+    /// is a second pool of RAM, so it gets its own allowance.
+    @Published var maxConcurrentPerServer: Int {
+        didSet { defaults.set(maxConcurrentPerServer, forKey: "maxConcurrentPerServer") }
+    }
 
     private let defaults = UserDefaults.standard
 
@@ -122,6 +136,12 @@ final class AppSettings: ObservableObject {
         appearanceThemeRaw = defaults.string(forKey: "appearanceThemeRaw") ?? "system"
         accentColorHex = defaults.integer(forKey: "accentColorHex") == 0 ? 0xE37654 : defaults.integer(forKey: "accentColorHex")
         standbyServersRaw = defaults.string(forKey: "standbyServers") ?? "[]"
+        // `integer(forKey:)` reads 0 for "never set" — treat that as the default
+        // rather than as "zero sub-agents", which would be a cap of nothing.
+        let storedConcurrency = defaults.integer(forKey: "maxConcurrentSubagents")
+        maxConcurrentSubagents = storedConcurrency == 0 ? 2 : max(1, min(20, storedConcurrency))
+        let storedPerServer = defaults.integer(forKey: "maxConcurrentPerServer")
+        maxConcurrentPerServer = storedPerServer == 0 ? 2 : max(1, min(20, storedPerServer))
     }
 
     var language: AppLanguage {
