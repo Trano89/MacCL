@@ -81,6 +81,11 @@ struct SessionConfig {
             args += ["--permission-mode", permissionMode.cliValue]
         }
         if streamPartial { args += ["--include-partial-messages"] }
+        // Without this, a sub-agent is a black box: the CLI emits NOTHING from
+        // inside it, so the agents panel had nothing to show but the Task card
+        // itself. The flag is what makes a sub-agent's text and thinking arrive
+        // as normal events carrying `parent_tool_use_id`.
+        args += ["--forward-subagent-text"]
         if !appendSystemPrompt.isEmpty {
             args += ["--append-system-prompt",
                      forDisplay ? "\"$(cat instructions/*.md)\"" : appendSystemPrompt]

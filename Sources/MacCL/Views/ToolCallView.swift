@@ -3,6 +3,9 @@ import SwiftUI
 struct ToolCallView: View {
     let activity: ToolActivity
     var onOpenAgent: ((String) -> Void)? = nil
+    /// Transcript cards sit indented under the message they belong to; the same
+    /// card inside the agents panel has no message above it, so it starts flush.
+    var indent: CGFloat = 38
     @State private var expanded = false
 
     var body: some View {
@@ -29,7 +32,7 @@ struct ToolCallView: View {
         }
         .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.corner))
         .overlay(RoundedRectangle(cornerRadius: Theme.corner).stroke(Theme.hairline))
-        .padding(.leading, 38)
+        .padding(.leading, indent)
     }
 
     private var header: some View {

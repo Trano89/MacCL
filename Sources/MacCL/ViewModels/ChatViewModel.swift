@@ -109,11 +109,42 @@ final class ChatViewModel: ObservableObject {
         let resultText: String?
     }
 
+    /// What one sub-agent has actually done, assembled from its own stream
+    /// events. This is the same material the main transcript is built from —
+    /// reasoning, prose, tool calls — just scoped to one agent.
+    struct AgentRun {
+        /// The model its requests really carried, straight off the wire. Not
+        /// the definition on disk, which may have been edited since it started,
+        /// and which says nothing about what a running agent is using.
+        var model: String?
+        var reasoning: String = ""
+        var text: String = ""
+        var tools: [ToolActivity] = []
+        /// toolUseId → index into `tools`, so a result can find its call.
+        var toolIndex: [String: Int] = [:]
+        /// This message's thinking / text already arrived as deltas — the
+        /// complete block that follows would otherwise be appended a second
+        /// time. (Today the CLI forwards whole blocks for sub-agents rather
+        /// than deltas, so these stay false; they cost nothing and mean a
+        /// future that does stream won't duplicate every sentence.)
+        var streamedThinking = false
+        var streamedText = false
+
+        /// Model and machine, split off the `model@machine` routing suffix.
+        var modelName: String? {
+            model.map { AgentDefinition.splitModelField($0).model }
+        }
+        var machineName: String? {
+            guard let model else { return nil }
+            let server = AgentDefinition.splitModelField(model).serverName
+            return server.isEmpty ? nil : server
+        }
+    }
+
     @Published var showAgentsPanel = false
     @Published var selectedAgentId: String?
-    /// Live feed per running agent (Task toolUseId → recent activity lines),
-    /// built from the sub-agent's own events (`parent_tool_use_id`).
-    @Published var agentActivity: [String: [String]] = [:]
+    /// Live state per sub-agent, keyed by the Task tool_use id.
+    @Published var agentRuns: [String: AgentRun] = [:]
 
     /// Every sub-agent of this conversation, transcript order.
     var agents: [AgentInfo] {
@@ -129,6 +160,10 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    /// How many sub-agents are working right now — what the toolbar badge shows,
+    /// so "is something running?" never needs the panel open to answer.
+    var runningAgentCount: Int { agents.filter(\.isRunning).count }
+
     /// Open the panel focused on one agent (the link in the transcript).
     func openAgent(_ id: String) {
         selectedAgentId = id
@@ -141,16 +176,71 @@ final class ChatViewModel: ObservableObject {
     private func handleAgentEvent(parent: String, _ env: StreamEnvelope) {
         receivedContentThisTurn = true
         waitingHint = nil
-        guard env.type == "assistant" else { return }
-        for block in env.message?.content ?? [] {
-            if case .toolUse(_, let name, let input) = block {
-                let headline = ToolActivity(toolUseId: "", name: name, input: input).headline
-                var lines = agentActivity[parent] ?? []
-                lines.append("⚒ \(name) — \(headline)")
-                if lines.count > 40 { lines.removeFirst(lines.count - 40) }
-                agentActivity[parent] = lines
+        var run = agentRuns[parent] ?? AgentRun()
+
+        switch env.type {
+        case "assistant":
+            // Every assistant event names the model that answered it — the only
+            // trustworthy answer to "which brain is this agent using".
+            if let model = env.message?.model, !model.isEmpty { run.model = model }
+            for block in env.message?.content ?? [] {
+                switch block {
+                case .text(let t) where !t.isEmpty:
+                    if run.streamedText {
+                        run.streamedText = false   // already shown live
+                    } else {
+                        run.text += run.text.isEmpty ? t : "\n\n" + t
+                    }
+                case .thinking(let t) where !t.isEmpty:
+                    if run.streamedThinking {
+                        run.streamedThinking = false   // already shown live
+                    } else {
+                        run.reasoning += run.reasoning.isEmpty ? t : "\n\n" + t
+                    }
+                case .toolUse(let id, let name, let input):
+                    let activity = ToolActivity(toolUseId: id, name: name, input: input)
+                    run.toolIndex[id] = run.tools.count
+                    run.tools.append(activity)
+                default:
+                    break
+                }
             }
+        case "user":
+            // The sub-agent's own tool results, so its cards close like the
+            // main conversation's instead of spinning forever.
+            for block in env.message?.content ?? [] {
+                if case .toolResult(let tid, let text, let isErr) = block,
+                   let idx = run.toolIndex[tid], idx < run.tools.count {
+                    run.tools[idx].resultText = text
+                    run.tools[idx].isError = isErr
+                    run.tools[idx].isRunning = false
+                }
+            }
+        case "stream_event":
+            // Live deltas: a slow local model must visibly be thinking, not
+            // merely "running" for two minutes.
+            guard let event = env.event,
+                  event["type"]?.asString == "content_block_delta",
+                  let delta = event["delta"] else { break }
+            switch delta["type"]?.asString {
+            case "thinking_delta":
+                if let t = delta["thinking"]?.asString, !t.isEmpty {
+                    run.reasoning += t
+                    run.streamedThinking = true
+                }
+            case "text_delta":
+                if let t = delta["text"]?.asString, !t.isEmpty {
+                    run.text += t
+                    run.streamedText = true
+                }
+            default:
+                break
+            }
+        default:
+            break
         }
+
+        agentRuns[parent] = run
     }
 
     /// The Ollama server THIS conversation is bound to. Chosen when the
@@ -369,7 +459,7 @@ final class ChatViewModel: ObservableObject {
         contextTokens = 0
         totalInputTokens = 0
         totalOutputTokens = 0
-        agentActivity = [:]
+        agentRuns = [:]
         showAgentsPanel = false
         selectedAgentId = nil
         currentReasoning = ""
@@ -409,7 +499,7 @@ final class ChatViewModel: ObservableObject {
         contextTokens = convo.contextTokens ?? 0
         totalInputTokens = convo.totalInputTokens ?? 0
         totalOutputTokens = convo.totalOutputTokens ?? 0
-        agentActivity = [:]
+        agentRuns = [:]
         showAgentsPanel = false
         selectedAgentId = nil
         resumeOnNextStart = true // next message continues the persisted session

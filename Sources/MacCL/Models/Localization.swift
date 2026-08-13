@@ -108,6 +108,8 @@ enum L10n {
         "agent_running": ("en cours", "running", "läuft", "em curso", "en curso"),
         "agent_done": ("terminé", "done", "fertig", "concluído", "completado"),
         "agent_failed": ("échoué", "failed", "fehlgeschlagen", "falhou", "fallido"),
+        "agent_answer": ("Réponse de l'agent", "Agent's answer", "Antwort des Agenten", "Resposta do agente", "Respuesta del agente"),
+        "agents_help": ("Voir ce que font les sous-agents — réflexion, outils, modèle et machine", "See what the sub-agents are doing — reasoning, tools, model and machine", "Sehen, was die Sub-Agenten tun — Denken, Werkzeuge, Modell und Maschine", "Ver o que os subagentes fazem — raciocínio, ferramentas, modelo e máquina", "Ver qué hacen los subagentes — razonamiento, herramientas, modelo y máquina"),
         // Agents library & routing
         "agents_library": ("Sous-agents", "Sub-agents", "Sub-Agenten", "Subagentes", "Subagentes"),
         "agents_library_empty": ("Aucun sous-agent défini pour ce dossier. Un sous-agent est un fichier .claude/agents/<nom>.md : il peut tourner sur un autre modèle, et même sur une autre machine.", "No sub-agents defined for this folder. A sub-agent is a .claude/agents/<name>.md file: it can run on another model, and even on another machine.", "Keine Sub-Agenten für diesen Ordner. Ein Sub-Agent ist eine Datei .claude/agents/<name>.md: Er kann ein anderes Modell und sogar eine andere Maschine nutzen.", "Nenhum subagente definido para esta pasta. Um subagente é um ficheiro .claude/agents/<nome>.md: pode usar outro modelo e até outra máquina.", "No hay subagentes definidos para esta carpeta. Un subagente es un archivo .claude/agents/<nombre>.md: puede usar otro modelo e incluso otra máquina."),

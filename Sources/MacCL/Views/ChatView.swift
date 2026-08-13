@@ -30,8 +30,8 @@ struct ChatView: View {
             }
             if vm.showAgentsPanel {
                 Divider()
-                AgentsPanel(vm: vm)
-                    .frame(width: 320)
+                AgentsPanel(vm: vm, onManage: { showAgentsLibrary = true })
+                    .frame(width: 340)
                     .transition(.move(edge: .trailing))
             }
         }
@@ -409,20 +409,32 @@ struct ChatView: View {
         .help(L10n.t("instructions_help"))
     }
 
-    /// The working folder's sub-agents. The count is worth showing: an agent
-    /// only exists as a file, so "none" and "not saved" look identical without it.
+    /// Toggles the agents panel — and, on its own, answers "is something
+    /// running?": a spinner and a live count, so that question never requires
+    /// opening anything. The definitions library is reached from inside the
+    /// panel, because watching is the frequent need and configuring is not.
     private var agentsButton: some View {
         Button {
-            showAgentsLibrary = true
+            withAnimation(.easeOut(duration: 0.18)) { vm.showAgentsPanel.toggle() }
         } label: {
-            Label(agentStore.agents.isEmpty
-                  ? L10n.t("agents_library")
-                  : "\(L10n.t("agents_library")) · \(agentStore.agents.count)",
-                  systemImage: "person.2.badge.gearshape")
+            HStack(spacing: 5) {
+                Image(systemName: "person.2")
+                Text(L10n.t("agents_title"))
+                if vm.runningAgentCount > 0 {
+                    ProgressView().controlSize(.mini)
+                    Text("\(vm.runningAgentCount)")
+                        .font(.caption.weight(.semibold).monospacedDigit())
+                } else if !vm.agents.isEmpty {
+                    Text("\(vm.agents.count)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .help(L10n.t("agents_library_empty"))
+        .tint(vm.runningAgentCount > 0 ? settings.accentColor : nil)
+        .help(L10n.t("agents_help"))
     }
 
     /// Just the folder locally; prefixed with the machine when it's elsewhere,
