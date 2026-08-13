@@ -141,6 +141,14 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    /// The model THIS conversation's sub-agents think with, as `model` or
+    /// `model@machine`. Empty = they inherit the conversation's own model.
+    ///
+    /// It reaches the CLI as `CLAUDE_CODE_SUBAGENT_MODEL`, which the resolver
+    /// checks before anything else — so it covers every sub-agent, including
+    /// the types Claude Code spawns on its own and which no file on disk
+    /// describes.
+    @Published var subagentModel: String
     @Published var showAgentsPanel = false
     @Published var selectedAgentId: String?
     /// Live state per sub-agent, keyed by the Task tool_use id.
@@ -149,7 +157,7 @@ final class ChatViewModel: ObservableObject {
     /// Every sub-agent of this conversation, transcript order.
     var agents: [AgentInfo] {
         items.compactMap { item in
-            guard case .tool(let a) = item.kind, a.name == "Task" else { return nil }
+            guard case .tool(let a) = item.kind, a.isDelegation else { return nil }
             return AgentInfo(id: a.toolUseId,
                              description: a.input["description"]?.asString ?? a.headline,
                              type: a.input["subagent_type"]?.asString,
@@ -262,6 +270,7 @@ final class ChatViewModel: ObservableObject {
         // Seed new conversations with the last server used (pure default — the
         // new-conversation sheet asks explicitly every time).
         conversationServerURL = settings.ollamaBaseURL
+        subagentModel = settings.subagentModel
         statusLine = L10n.t("ready")
         // Wire the session FIRST: an unwired session runs `claude` and drops
         // every event on the floor — the app looks alive and shows nothing.
@@ -468,6 +477,7 @@ final class ChatViewModel: ObservableObject {
         isRunning = false
         statusLine = L10n.t("new_conversation")
         conversationInstructions = ""
+        subagentModel = settings.subagentModel
         currentGroup = nil
         stopTurnTimer()
         // The new-conversation sheet sets the server right after this call;
@@ -522,6 +532,7 @@ final class ChatViewModel: ObservableObject {
         serverWatchTask?.cancel()
         sessionBackendURL = nil
         conversationInstructions = convo.instructions ?? ""
+        subagentModel = convo.subagentModel ?? ""
         currentGroup = convo.group
         if let pm = convo.permissionMode { settings.permissionModeRaw = pm }
         if let ef = convo.effort { settings.effortLevelRaw = ef }
@@ -563,6 +574,7 @@ final class ChatViewModel: ObservableObject {
             effort: settings.effortLevelRaw,
             serverURL: conversationServerURL,
             instructions: conversationInstructions.isEmpty ? nil : conversationInstructions,
+            subagentModel: subagentModel.isEmpty ? nil : subagentModel,
             group: currentGroup,
             items: items,
             totalCostUSD: totalCostUSD,
@@ -701,7 +713,11 @@ final class ChatViewModel: ObservableObject {
         // conversation's own server; the fan-out router only when a sub-agent
         // names another machine.
         let backend = await resolveBackendURL(for: model)
-        let extraEnv = ModelRouter.shared.environment(for: model, serverURL: backend.url)
+        var extraEnv = ModelRouter.shared.environment(for: model, serverURL: backend.url)
+        // Part of the session's identity — which brain the delegated work uses —
+        // so it belongs in the displayed command, not in the hidden plumbing.
+        let subagent = subagentModel.trimmingCharacters(in: .whitespaces)
+        if !subagent.isEmpty { extraEnv["CLAUDE_CODE_SUBAGENT_MODEL"] = subagent }
 
         if session.isRunning {
             // The live process holds the base URL it was spawned with, so a
@@ -824,8 +840,15 @@ final class ChatViewModel: ObservableObject {
         -> (url: String, routedServers: [String]) {
         guard model.provider != .anthropic else { return (conversationServerURL, []) }
 
+        // Which machines this turn may need to reach beyond its own server:
+        // the conversation's sub-agent setting first, plus any hand-written
+        // `.claude/agents/*.md` that names one.
+        var needed = Set<String>()
+        let suffix = AgentDefinition.splitModelField(
+            subagentModel.trimmingCharacters(in: .whitespaces)).serverName
+        if !suffix.isEmpty { needed.insert(suffix) }
         await AgentStore.shared.loadIfNeeded(location: settings.workLocation)
-        let needed = AgentStore.shared.referencedServerNames
+        needed.formUnion(AgentStore.shared.referencedServerNames)
         guard !needed.isEmpty else { return (conversationServerURL, []) }
 
         let known = settings.standbyServers

@@ -2,16 +2,16 @@ import SwiftUI
 
 /// Right-hand panel: what the conversation's sub-agents are doing, right now.
 ///
-/// A sub-agent used to be a black box — a Task card that spun until it didn't.
+/// A sub-agent used to be a black box — an Agent card that spun until it didn't.
 /// This shows the same material the main transcript is built from, scoped to one
 /// agent: what it's thinking, which tools it's running, what it answered. And,
-/// because a sub-agent can be pointed at another model on another machine, which
-/// brain actually answered — read off its own events, not off the definition on
-/// disk, which says nothing about a run already in flight.
+/// because the conversation can send its sub-agents to another model on another
+/// machine, which brain actually answered — read off the agent's own events, so
+/// it describes the run in front of you rather than the setting as it stands now.
 struct AgentsPanel: View {
     @ObservedObject var vm: ChatViewModel
-    /// Opens the definitions library — configuration lives one click away from
-    /// the thing it configures.
+    /// Opens the sub-agent model choice — the setting that decides what these
+    /// agents think with, one click from the agents themselves.
     var onManage: () -> Void
 
     var body: some View {
@@ -35,10 +35,10 @@ struct AgentsPanel: View {
             }
             Spacer()
             Button(action: onManage) {
-                Image(systemName: "slider.horizontal.3").foregroundStyle(.secondary)
+                Image(systemName: "cpu").foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
-            .help(L10n.t("agents_library"))
+            .help(L10n.t("model_for_subagents"))
             Button {
                 vm.showAgentsPanel = false
             } label: {
@@ -59,7 +59,7 @@ struct AgentsPanel: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                 Button(action: onManage) {
-                    Label(L10n.t("agents_library"), systemImage: "slider.horizontal.3")
+                    Label(L10n.t("model_for_subagents"), systemImage: "cpu")
                 }
                 .buttonStyle(.link)
                 Spacer()

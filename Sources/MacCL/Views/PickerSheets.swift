@@ -1,10 +1,23 @@
 import SwiftUI
 
-/// Model chooser presented as a sheet (grouped Anthropic / Ollama).
+/// Model chooser presented as a sheet — for the conversation, and for the
+/// sub-agents it delegates to.
+///
+/// Both live here on purpose. "Which brain thinks" is one question asked twice,
+/// and the delegated half used to be answered by authoring files describing
+/// agents that Claude Code mostly doesn't spawn — which explained nothing about
+/// what actually ran on the machine.
 struct ModelPickerSheet: View {
     @ObservedObject var vm: ChatViewModel
     @EnvironmentObject var settings: AppSettings
     @Environment(\.dismiss) private var dismiss
+    /// 0 = the conversation's model, 1 = its sub-agents'.
+    var initialTarget: Int = 0
+
+    @State private var target = 0
+    /// Model names per standby server URL, fetched as the sheet opens so a
+    /// sub-agent can only be sent to a model that machine actually has.
+    @State private var modelsByURL: [String: [String]] = [:]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -20,10 +33,24 @@ struct ModelPickerSheet: View {
                 .controlSize(.small)
             }
             .padding(12)
+
+            Picker("", selection: $target) {
+                Text(L10n.t("model_for_conversation")).tag(0)
+                Text(L10n.t("model_for_subagents")).tag(1)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 12)
+            .padding(.bottom, 10)
             Divider()
 
-            List {
-                buildModelList(groups: Dictionary(grouping: vm.availableModels, by: { $0.provider }))
+            if target == 0 {
+                List {
+                    buildModelList(groups: Dictionary(grouping: vm.availableModels,
+                                                      by: { $0.provider }))
+                }
+            } else {
+                subagentList
             }
 
             Divider()
@@ -34,7 +61,108 @@ struct ModelPickerSheet: View {
             }
             .padding(10)
         }
-        .frame(width: 380, height: 460)
+        .frame(width: 420, height: 500)
+        .onAppear { target = initialTarget }
+        .task { await loadStandbyModels() }
+    }
+
+    // MARK: Sub-agent model
+
+    private var subagentList: some View {
+        List {
+            Section {
+                subagentRow(label: L10n.t("subagent_inherit"), value: "",
+                            detail: vm.selectedModel.name)
+            } footer: {
+                Text(L10n.t("subagent_model_hint"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            // How many at once belongs beside which brain: together they decide
+            // how much a single Ollama box is being asked to hold at a time.
+            Section(L10n.t("concurrency_title")) {
+                Stepper(value: $settings.maxConcurrentSubagents, in: 1...20) {
+                    Text(settings.maxConcurrentSubagents == 1
+                         ? L10n.t("concurrency_serial")
+                         : "\(settings.maxConcurrentSubagents)")
+                        .monospacedDigit()
+                }
+                if !settings.standbyServers.isEmpty {
+                    Stepper(value: $settings.maxConcurrentPerServer, in: 1...20) {
+                        HStack {
+                            Text(L10n.t("concurrency_per_server"))
+                            Spacer()
+                            Text("\(settings.maxConcurrentPerServer)")
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                Text(L10n.t("concurrency_hint"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            // The conversation's own server: no suffix, so no router involved.
+            let local = vm.availableModels.filter { $0.provider != .anthropic }
+            if !local.isEmpty {
+                Section(vm.serverHost) {
+                    ForEach(local) { model in
+                        subagentRow(label: model.name, value: model.modelArg,
+                                    detail: model.subtitle)
+                    }
+                }
+            }
+
+            // Other machines: the value carries the `@machine` suffix the
+            // router dispatches on.
+            ForEach(settings.standbyServers) { server in
+                let names = modelsByURL[server.url] ?? []
+                if !names.isEmpty, server.url != vm.conversationServerURL {
+                    Section(server.name.isEmpty ? server.displayHost : server.name) {
+                        ForEach(names, id: \.self) { name in
+                            subagentRow(label: name,
+                                        value: name + AgentDefinition.serverSeparator
+                                             + server.name,
+                                        detail: server.displayHost)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func subagentRow(label: String, value: String, detail: String?) -> some View {
+        let selected = vm.subagentModel == value
+        return Button {
+            vm.subagentModel = value
+            settings.subagentModel = value   // seed for the next conversation
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(selected ? Theme.accent : .secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(label)
+                    if let detail, !detail.isEmpty {
+                        Text(detail).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// One listing per saved machine. Servers that don't answer simply
+    /// contribute nothing rather than blocking the sheet.
+    private func loadStandbyModels() async {
+        for server in settings.standbyServers where modelsByURL[server.url] == nil {
+            guard !server.name.isEmpty, server.url != vm.conversationServerURL else { continue }
+            let models = await OllamaClient.listModels(baseURL: server.url)
+            modelsByURL[server.url] = models.map(\.modelArg).sorted()
+        }
     }
 
     @ViewBuilder

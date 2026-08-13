@@ -13,7 +13,7 @@ struct ToolCallView: View {
             header
             // The link into the agents panel: every Task card carries one, so a
             // sub-agent is always one click from its instructions and progress.
-            if activity.name == "Task", let onOpenAgent {
+            if activity.isDelegation, let onOpenAgent {
                 Divider().padding(.horizontal, 12)
                 Button {
                     onOpenAgent(activity.toolUseId)
@@ -106,7 +106,7 @@ struct ToolCallView: View {
         case "Grep": return "magnifyingglass"
         case "Glob": return "folder"
         case "WebFetch", "WebSearch": return "globe"
-        case "Task": return "person.2"
+        case "Agent", "Task": return "person.2"
         case "TodoWrite": return "checklist"
         default: return "wrench.and.screwdriver"
         }

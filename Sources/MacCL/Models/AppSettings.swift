@@ -86,6 +86,11 @@ final class AppSettings: ObservableObject {
     @Published var standbyServersRaw: String {
         didSet { defaults.set(standbyServersRaw, forKey: "standbyServers") }
     }
+    /// Seed for a new conversation's sub-agent model (`model` or `model@machine`).
+    /// Empty = sub-agents think with the conversation's own model.
+    @Published var subagentModel: String {
+        didSet { defaults.set(subagentModel, forKey: "subagentModel") }
+    }
     /// How many sub-agents may run at once (CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS).
     ///
     /// The CLI's own default is 20, which is a number written for a cloud API,
@@ -136,6 +141,7 @@ final class AppSettings: ObservableObject {
         appearanceThemeRaw = defaults.string(forKey: "appearanceThemeRaw") ?? "system"
         accentColorHex = defaults.integer(forKey: "accentColorHex") == 0 ? 0xE37654 : defaults.integer(forKey: "accentColorHex")
         standbyServersRaw = defaults.string(forKey: "standbyServers") ?? "[]"
+        subagentModel = defaults.string(forKey: "subagentModel") ?? ""
         // `integer(forKey:)` reads 0 for "never set" — treat that as the default
         // rather than as "zero sub-agents", which would be a cap of nothing.
         let storedConcurrency = defaults.integer(forKey: "maxConcurrentSubagents")

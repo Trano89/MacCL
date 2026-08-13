@@ -6,10 +6,9 @@ struct ChatView: View {
     @ObservedObject var vm: ChatViewModel
     @EnvironmentObject var settings: AppSettings
     @ObservedObject private var instructions = InstructionsStore.shared
-    @ObservedObject private var agentStore = AgentStore.shared
     @FocusState private var composerFocused: Bool
     @State private var showInstructions = false
-    @State private var showAgentsLibrary = false
+    @State private var modelPickerTarget = 0
     @State private var showSlashCommands = false
     @State private var showModelPicker = false
     @State private var showServerPicker = false
@@ -30,7 +29,7 @@ struct ChatView: View {
             }
             if vm.showAgentsPanel {
                 Divider()
-                AgentsPanel(vm: vm, onManage: { showAgentsLibrary = true })
+                AgentsPanel(vm: vm, onManage: { modelPickerTarget = 1; showModelPicker = true })
                     .frame(width: 340)
                     .transition(.move(edge: .trailing))
             }
@@ -175,15 +174,6 @@ struct ChatView: View {
         .sheet(isPresented: $showInstructions) {
             InstructionsView()
         }
-        .sheet(isPresented: $showAgentsLibrary) {
-            AgentsLibraryView(conversationServerURL: vm.conversationServerURL,
-                              workLocation: settings.workLocation)
-        }
-        // The agent list belongs to the working folder, so it has to be re-read
-        // whenever that folder (or the machine it's on) changes.
-        .task(id: settings.workLocationHostId + "\u{1F}" + settings.workingDirectory) {
-            await agentStore.load(location: settings.workLocation)
-        }
     }
 
     /// Claude Code slash commands, inserted into the composer.
@@ -217,6 +207,7 @@ struct ChatView: View {
             folderButton
             instructionsButton
             agentsButton
+            subagentModelChip
             Spacer(minLength: 0)
             tokenChip
         }
@@ -318,6 +309,7 @@ struct ChatView: View {
 
     private var modelMenu: some View {
         Button {
+            modelPickerTarget = 0
             showModelPicker = true
         } label: {
             Label(vm.selectedModel.name,
@@ -327,7 +319,27 @@ struct ChatView: View {
         .controlSize(.small)
         .help(L10n.t("model_help"))
         .sheet(isPresented: $showModelPicker) {
-            ModelPickerSheet(vm: vm)
+            ModelPickerSheet(vm: vm, initialTarget: modelPickerTarget)
+        }
+    }
+
+    /// Shown only when the sub-agents think with something other than the
+    /// conversation's model — otherwise there is nothing to say, and a chip
+    /// repeating the model beside itself is noise.
+    @ViewBuilder private var subagentModelChip: some View {
+        if !vm.subagentModel.isEmpty {
+            Button {
+                modelPickerTarget = 1
+                showModelPicker = true
+            } label: {
+                let parts = AgentDefinition.splitModelField(vm.subagentModel)
+                Label(L10n.t("subagents_on", parts.serverName.isEmpty
+                             ? parts.model : "\(parts.model) · \(parts.serverName)"),
+                      systemImage: "person.2")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help(L10n.t("subagent_model_hint"))
         }
     }
 

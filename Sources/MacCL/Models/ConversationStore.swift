@@ -21,6 +21,14 @@ struct Conversation: Identifiable, Codable {
     var serverURL: String?
     /// Extra instructions appended to the system prompt for THIS conversation.
     var instructions: String?
+    /// Which model this conversation's sub-agents think with, as
+    /// `model` or `model@machine`. nil/empty = the conversation's own model.
+    ///
+    /// One setting for the whole conversation rather than per-agent files: the
+    /// agents that actually run are the ones Claude Code spawns itself
+    /// (Explore, general-purpose…), and a library of definitions says nothing
+    /// about those.
+    var subagentModel: String?
     /// User-defined group name for organizing the sidebar.
     var group: String?
     var items: [ChatItem]
