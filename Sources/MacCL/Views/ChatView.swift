@@ -251,7 +251,10 @@ struct ChatView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accent)
-                .disabled(!vm.canSend || vm.items.isEmpty)
+                // Was `!vm.canSend`, which also requires a composed message —
+                // so the button greyed out precisely when the context is full
+                // and you have nothing typed, which is when you want it.
+                .disabled(!vm.canCompact)
                 Text(L10n.t("compact_hint"))
                     .font(.caption)
                     .foregroundStyle(.secondary)

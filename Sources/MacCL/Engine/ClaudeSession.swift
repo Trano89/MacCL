@@ -257,13 +257,10 @@ final class ClaudeSession {
         proc.standardError = stderrPipe
         self.stdinPipe = stdinPipe
 
-        // Make pipe fds non-blocking instead of globally suppressing SIGPIPE.
-        // signal(SIGPIPE, SIG_IGN) is DANGEROUS — it affects ALL threads in the app,
-        // not just this process. A library that legitimately writes to a closed socket
-        // would silently crash rather than getting an EPIPE error.
-        setNonBlocking(stdinPipe.fileHandleForWriting.fileDescriptor)
-        setNonBlocking(stdoutPipe.fileHandleForReading.fileDescriptor)
-        setNonBlocking(stderrPipe.fileHandleForReading.fileDescriptor)
+        // Writing to a `claude` that has just died must raise EPIPE, not SIGPIPE,
+        // whose default action is to kill THIS app. Only the write end needs it:
+        // reading a closed pipe returns EOF, it never signals.
+        suppressSIGPIPE(stdinPipe.fileHandleForWriting.fileDescriptor)
 
         let stdoutHandle = stdoutPipe.fileHandleForReading
         let stderrHandle = stderrPipe.fileHandleForReading
@@ -292,10 +289,21 @@ final class ClaudeSession {
 
     // MARK: - Pipe helpers
 
-    private func setNonBlocking(_ fd: Int32) {
-        let flags = fcntl(fd, F_GETFD)
-        guard flags >= 0 else { return }
-        _ = fcntl(fd, F_SETFD, flags | O_NONBLOCK)
+    /// Ask the kernel for EPIPE instead of SIGPIPE on this one descriptor.
+    ///
+    /// The alternative, `signal(SIGPIPE, SIG_IGN)`, is process-wide: it changes
+    /// the behaviour of every library in the app, which is why it was rejected
+    /// here in the first place. `F_SETNOSIGPIPE` is the per-descriptor version
+    /// and needs no such trade.
+    ///
+    /// What stood here before asked for `O_NONBLOCK` via `F_SETFD`. That call
+    /// silently did nothing: `F_SETFD` carries *descriptor* flags (`FD_CLOEXEC`),
+    /// while `O_NONBLOCK` is a *status* flag belonging to `F_SETFL`. So the
+    /// protection its comment described never existed — and had it worked, a
+    /// non-blocking stdin would have made `write` partial, truncating a turn's
+    /// JSON mid-line instead of delivering it.
+    private func suppressSIGPIPE(_ fd: Int32) {
+        _ = fcntl(fd, F_SETNOSIGPIPE, 1)
     }
 
     // MARK: - Writing

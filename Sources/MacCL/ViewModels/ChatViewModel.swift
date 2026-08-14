@@ -344,6 +344,14 @@ final class ChatViewModel: ObservableObject {
         return (hasText || !attachments.isEmpty) && !isRunning && !isBlockedByServer
     }
 
+    /// Compaction needs something to compact and a free turn — deliberately NOT
+    /// `canSend`, which also demands a composed message. Borrowing it made the
+    /// "compact now" button do nothing whenever the composer was empty, which is
+    /// exactly when you reach for it.
+    var canCompact: Bool {
+        !items.isEmpty && !isRunning && !isBlockedByServer
+    }
+
     /// A conversation whose server is down cannot continue — until it's back.
     var isBlockedByServer: Bool { usesOllama && serverUnavailable }
 
@@ -1135,12 +1143,16 @@ final class ChatViewModel: ObservableObject {
     /// User-requested compaction (token chip): same `/compact` as the automatic
     /// path, but as a visible turn the user chose to spend.
     func compactContext() {
-        guard canSend, !items.isEmpty else { return }
-        isRunning = true
+        guard canCompact else { return }
         statusLine = L10n.t("compacting")
-        startTurnTimer()
         appendNotice(.info, L10n.t("compact_notice"))
-        session.send(content: [["type": "text", "text": "/compact"]])
+        // Through the same launch path as a real turn, NOT `session.send`
+        // directly: a conversation reopened from history has no process yet,
+        // and `send` on an unstarted session drops the message on the floor —
+        // which, with `isRunning` already set, left the app compacting forever
+        // with no way back. This spawns or resumes as needed, and reports the
+        // server being unreachable instead of hanging.
+        Task { await launchOrContinue([["type": "text", "text": "/compact"]]) }
     }
 
     private func startAutoCompact() {
