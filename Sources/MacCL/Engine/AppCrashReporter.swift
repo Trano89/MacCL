@@ -209,7 +209,8 @@ final class AppCrashReporter: ObservableObject {
     }
 
     private static var osBuildNumber: String {
-        ProcessInfo.processInfo.operatingSystemVersionString ?? "unknown"
+        // Non-optional: the `?? "unknown"` that stood here could never fire.
+        ProcessInfo.processInfo.operatingSystemVersionString
     }
 
     private static var appVersion: String {

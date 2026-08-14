@@ -2,6 +2,9 @@ import Foundation
 
 /// Per-turn usage metrics: tokens, cost, latency, errors. */
 struct TurnMetric: Codable, Sendable, Identifiable {
+    /// Identity for SwiftUI only, never persisted: a `let` with a default is
+    /// not decodable, so round-tripping silently minted a new one anyway. Made
+    /// explicit rather than left as a warning that reads like a data loss.
     let id = UUID()
     let date: Date
     let modelId: String
@@ -13,6 +16,10 @@ struct TurnMetric: Codable, Sendable, Identifiable {
     let costUSD: Double
     let latencyMs: Int
     let isError: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case date, modelId, provider, tokensInput, tokensOutput, costUSD, latencyMs, isError
+    }
 }
 
 /// Daily aggregate of cost and tokens — one row per day. */

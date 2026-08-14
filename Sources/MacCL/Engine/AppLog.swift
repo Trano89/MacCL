@@ -23,12 +23,21 @@ struct LogEvent: Identifiable, Codable, Sendable {
     }
 
     var timestamp: String {
-        Self._formatter.dateFormat = "HH:mm:ss.SSS"
-        return Self._formatter.string(from: date)
+        Self._formatter.string(from: date)
     }
 
-    @MainActor
-    static private let _formatter = DateFormatter()
+    /// Built once with its format already set, and never mutated afterwards.
+    /// `DateFormatter` is safe to *format* with from several threads, but the
+    /// getter used to assign `dateFormat` on every call — a shared mutable
+    /// formatter reachable from any thread that logs. The POSIX locale matters
+    /// too: a fixed format string resolved against the user's locale can come
+    /// back in another calendar.
+    static private let _formatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "HH:mm:ss.SSS"
+        return f
+    }()
 }
 
 /// Configurable diagnostic logger for MacCL.
