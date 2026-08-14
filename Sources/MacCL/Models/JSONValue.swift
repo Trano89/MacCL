@@ -41,14 +41,22 @@ extension JSONValue {
         return nil
     }
 
+    /// A number as text, never through `Int(_:)`, which TRAPS outside Int's
+    /// range: the stream is external input and `Int(1e300)` crashed the app
+    /// once already. That fix lived only in `asString`, while `pretty()` kept
+    /// the trapping form — and `pretty()` is what renders every tool card — so
+    /// the conversion now has one home that every path goes through.
+    /// Infinity takes the same route: `inf == inf.rounded()` is true, and
+    /// `Int(exactly: inf)` is nil rather than a trap.
+    static func numberText(_ n: Double) -> String {
+        if n == n.rounded(), let i = Int(exactly: n.rounded()) { return String(i) }
+        return String(n)
+    }
+
     var asString: String? {
         switch self {
         case .string(let s): return s
-        case .number(let n):
-            // Int(exactly:) instead of Int(n): the stream is external input, and
-            // Int(1e300) TRAPS — one absurd number from a model crashed the app.
-            if let i = Int(exactly: n.rounded()), n == n.rounded() { return String(i) }
-            return String(n)
+        case .number(let n): return Self.numberText(n)
         case .bool(let b): return String(b)
         default: return nil
         }
@@ -71,7 +79,7 @@ extension JSONValue {
         case .string(let s): return s
         case .null: return "null"
         case .bool(let b): return String(b)
-        case .number(let n): return n == n.rounded() ? String(Int(n)) : String(n)
+        case .number(let n): return Self.numberText(n)
         default:
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
