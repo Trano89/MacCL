@@ -294,7 +294,13 @@ final class ChatViewModel: ObservableObject {
         quitObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.session.stop() }
+            Task { @MainActor in
+                self?.session.stop()
+                // The loopback listener would die with the process anyway; closing
+                // it deliberately keeps `stop()` a real code path rather than a
+                // method nothing ever calls.
+                AgentRouter.shared.stop()
+            }
         }
     }
 

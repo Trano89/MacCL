@@ -49,9 +49,6 @@ final class AgentRouter {
 
     var isRunning: Bool { port != nil }
 
-    /// The base URL to hand `claude` — nil when the router isn't up.
-    var baseURL: String? { port.map { "http://127.0.0.1:\($0)" } }
-
     private init() {}
 
     /// Start (or re-point) the router. Returns the base URL `claude` should use.
@@ -59,20 +56,27 @@ final class AgentRouter {
     /// changes server mid-conversation doesn't need relaunching.
     @discardableResult
     func start(route: Route) async throws -> String {
-        if let core {
+        // `core` and `port` are set together and cleared together, but reading
+        // them as two independent optionals invited a "re-pointed, returned
+        // empty string" path that would have set ANTHROPIC_BASE_URL="" — a
+        // session pointed at nothing. Require both, or start fresh.
+        if let core, let port {
             await core.update(route: route)
             AppLog.info("router", "re-pointed: default=\(route.defaultUpstream) "
                         + "servers=\(route.byServerName.keys.sorted().joined(separator: ","))")
-            return baseURL ?? ""
+            return Self.address(port: port)
         }
+        stop()   // a half-built router from a failed start must not linger
         let core = RouterCore(route: route)
         let bound = try await core.start()
         self.core = core
         self.port = bound
         AppLog.info("router", "listening on 127.0.0.1:\(bound) default=\(route.defaultUpstream) "
                     + "servers=\(route.byServerName.keys.sorted().joined(separator: ","))")
-        return "http://127.0.0.1:\(bound)"
+        return Self.address(port: bound)
     }
+
+    private static func address(port: UInt16) -> String { "http://127.0.0.1:\(port)" }
 
     func stop() {
         core?.stop()
