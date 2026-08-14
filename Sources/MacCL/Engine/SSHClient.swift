@@ -722,7 +722,10 @@ enum SSHClient {
         } catch {
             return .failure(.remoteError(error.localizedDescription))
         }
-        AppLog.info("ssh", "host key accepted for \(knownHostsSpec(host))")
+        // Recorded whatever the verbosity setting says: "this machine was
+        // trusted, on this date" is the audit trail behind an agent that runs
+        // shell commands over there, not a diagnostic detail.
+        AppLog.write("ssh", "host key accepted for \(knownHostsSpec(host))")
         return .success(())
     }
 

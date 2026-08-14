@@ -233,6 +233,13 @@ enum AppLog {
         var dupCount = 1
         queue.sync {
             let now = Date()
+            // Entries were added and refreshed but never removed, so the map
+            // kept a key for every distinct message the session had ever
+            // logged. Sweep the closed windows once it grows past a size no
+            // healthy session reaches.
+            if dedupMap.count > 256 {
+                dedupMap = dedupMap.filter { now.timeIntervalSince($0.value.firstSeen) < dedupWindow }
+            }
             if let existing = dedupMap[dedupKey], (now.timeIntervalSince(existing.firstSeen)) < dedupWindow {
                 dupCount = existing.count + 1
                 dedupMap[dedupKey] = DedupEntry(count: dupCount, firstSeen: existing.firstSeen)
@@ -248,7 +255,12 @@ enum AppLog {
         if case .warn = severity, dupCount >= 5 { actualSeverity = .error }
         else if case .info = severity, dupCount >= 10 { actualSeverity = .warn }
 
-        guard level.levelInt >= actualSeverity.levelInt || shouldEmit else { return }
+        // The level is a ceiling, not a suggestion. This read `|| shouldEmit`,
+        // and `shouldEmit` is true for every message not already inside a dedup
+        // window — so the guard was `<level check> || true` and each new message
+        // was written whatever the user had chosen, `off` included. Dedup
+        // throttles what the level already allows; it cannot widen it.
+        guard level.levelInt >= actualSeverity.levelInt, shouldEmit else { return }
 
         let tailMsg = (dupCount > 1) ? "\(message) (x\(dupCount))" : message
         if #unavailable(macOS 13.0) { return }
