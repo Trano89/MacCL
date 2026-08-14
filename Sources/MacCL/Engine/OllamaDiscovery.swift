@@ -21,13 +21,38 @@ enum OllamaDiscovery {
     }
 
     /// Background scanner that periodically discovers Ollama servers on port 11434.
+    /// `@unchecked Sendable` is a promise the class has to keep. It didn't:
+    /// `discoveredServers` was written from the scanning task while the
+    /// main actor read it a few lines above, and `isScanning` was a
+    /// check-then-set with nothing between the two — so a network-change scan
+    /// landing on top of the periodic one could run a second sweep and write
+    /// the dictionary concurrently. Every shared field now sits behind `lock`.
     final class PeriodicScanner: @unchecked Sendable {
+        private let lock = NSLock()
         private var timerTask: Task<Void, Never>?
         private let interval: TimeInterval
         private weak var delegate: ServerDiscoveryDelegate?
-        // All servers found across all scans (keyed by URL).
-        private(set) var discoveredServers: [String: Server] = [:]
-        private var isScanning = false
+        /// What the LAST completed scan saw, keyed by URL — used only to tell a
+        /// newly-appeared server from one already reported.
+        private var _discoveredServers: [String: Server] = [:]
+        private var _isScanning = false
+
+        var discoveredServers: [String: Server] {
+            lock.lock(); defer { lock.unlock() }
+            return _discoveredServers
+        }
+
+        /// Claim the right to scan. False when one is already in flight.
+        private func beginScan() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            if _isScanning { return false }
+            _isScanning = true
+            return true
+        }
+
+        private func endScan() {
+            lock.lock(); _isScanning = false; lock.unlock()
+        }
 
         init(interval: TimeInterval = 30, delegate: ServerDiscoveryDelegate?) {
             self.interval = interval
@@ -39,39 +64,47 @@ enum OllamaDiscovery {
             stop()
             // Do an immediate first scan, then schedule recurring ones.
             Task { [weak self] in await self?.runScan(configuredServer: configuredServer) }
-            timerTask = Task { [weak self] in
+            let task = Task { [weak self] in
                 guard let self else { return }
                 while !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: UInt64(self.interval * 1_000_000_000))
                     await self.runScan(configuredServer: nil)
                 }
             }
+            lock.lock(); timerTask = task; lock.unlock()
         }
 
         func stop() {
-            timerTask?.cancel()
+            lock.lock()
+            let task = timerTask
             timerTask = nil
+            lock.unlock()
+            task?.cancel()
         }
 
         /// Run a single discovery scan (public for on-demand triggers from network changes).
         func runScan(configuredServer: String?) async {
-            guard !isScanning else { return }
-            isScanning = true
-            defer { isScanning = false }
+            guard beginScan() else { return }
+            defer { endScan() }
             let newServers = await discover(port: 11434, configured: configuredServer ?? "")
             let now = [String: Server](uniqueKeysWithValues: newServers.map { ($0.url, $0) })
 
-            // Report newly found servers on the main actor.
-            if !newServers.isEmpty {
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    for server in newServers where discoveredServers[server.url] == nil {
-                        delegate?.didDiscoverServer(server)
-                    }
+            // Take what the previous scan knew, then publish this one's result.
+            // The comparison has to happen against a snapshot: reading the live
+            // dictionary from the main actor while this task rewrote it was the
+            // race, and it also made "new" depend on when the two interleaved.
+            lock.lock()
+            let previous = _discoveredServers
+            _discoveredServers = now
+            lock.unlock()
+
+            guard !newServers.isEmpty else { return }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                for server in newServers where previous[server.url] == nil {
+                    delegate?.didDiscoverServer(server)
                 }
             }
-            // Update discovered servers list on the background task's actor.
-            discoveredServers = now
         }
     }
 
@@ -202,11 +235,23 @@ enum OllamaDiscovery {
             self.delegate = delegate
         }
 
+        /// Last status handed to the delegate. Touched only from `queue`, which
+        /// is serial, so it needs no lock of its own.
+        private var lastReachable: Bool?
+
         func startMonitoring() {
             let monitor = NWPathMonitor()
-            monitor.pathUpdateHandler = { [weak delegate] path in
-                guard let delegate else { return }
+            monitor.pathUpdateHandler = { [weak self, weak delegate] path in
+                guard let self, let delegate else { return }
                 let reachable = path.status == .satisfied
+                // Only a real transition is worth reporting. NWPathMonitor
+                // fires on every path change — a VPN toggling, Wi-Fi roaming,
+                // an interface coming up — and each one made the delegate
+                // launch a full /24 sweep. That is the port-scanner behaviour
+                // the periodic interval was widened to 300 s to avoid, arriving
+                // through the other door.
+                guard self.lastReachable != reachable else { return }
+                self.lastReachable = reachable
                 Task { @MainActor in
                     delegate.didChangeNetworkReachable(reachable)
                 }
