@@ -499,6 +499,9 @@ private struct SSHHostEditor: View {
     @State private var connecting = false
     @State private var errorText: String?
     @State private var fingerprints: [String] = []
+    /// The exact key lines the shown fingerprints were computed from. Trusting
+    /// writes these, so what the user approved is what lands in known_hosts.
+    @State private var pendingHostKeys = ""
     @State private var showDeleteConfirm = false
 
     private var isNew: Bool { store.host(id: host.id) == nil }
@@ -693,6 +696,7 @@ private struct SSHHostEditor: View {
         connecting = true
         errorText = nil
         fingerprints = []
+        pendingHostKeys = ""
         defer { connecting = false }
         guard stagePassword() else { return }
 
@@ -700,8 +704,9 @@ private struct SSHHostEditor: View {
         // Host key first: until it's trusted, every other failure reads as a
         // generic "connection failed", which explains nothing.
         switch await SSHClient.hostKeyState(candidate) {
-        case .unknown(let prints):
+        case .unknown(let prints, let keys):
             fingerprints = prints
+            pendingHostKeys = keys
             return
         case .unreachable:
             // Nothing answered on port 22 — say what to check rather than
@@ -733,9 +738,10 @@ private struct SSHHostEditor: View {
     private func trustThenConnect() async {
         connecting = true
         errorText = nil
-        switch await SSHClient.acceptHostKey(edited) {
+        switch await SSHClient.acceptHostKey(edited, keys: pendingHostKeys) {
         case .success:
             fingerprints = []
+            pendingHostKeys = ""
             connecting = false
             await connect()
         case .failure(let failure):

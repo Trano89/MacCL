@@ -39,6 +39,10 @@ enum URLValidator {
         if let sep = url.range(of: "://") {
             let scheme = url[url.startIndex..<sep.lowerBound].lowercased()
             guard scheme == "http" || scheme == "https" else { return nil }
+            // Schemes are case-insensitive (RFC 3986). Normalise, or "HTTP://x"
+            // survives this guard only to be rejected by an exact-match
+            // comparison further down — a rejection with nothing to explain it.
+            url = scheme + url[sep.lowerBound...]
         } else {
             // Auto-correct missing scheme — Ollama speaks plain HTTP on a LAN.
             url = "http://" + url
@@ -47,12 +51,18 @@ enum URLValidator {
         // doesn't end up as "1.2.3.4/:11434".
         while url.hasSuffix("/") { url = String(url.dropLast()) }
 
-        if let parsed = URL(string: url), parsed.port == nil,
-           parsed.scheme == "http", parsed.host?.isEmpty == false {
-            url += ":\(defaultOllamaPort)"
+        // Set the port structurally rather than by appending text. Appending
+        // put it after the path — "http://host/v1" became "http://host/v1:11434",
+        // which parses, passes validation, and points nowhere — and it also
+        // had to special-case the brackets of an IPv6 literal.
+        guard var comps = URLComponents(string: url),
+              let host = comps.host, !host.isEmpty else { return nil }
+        if comps.port == nil, comps.scheme == "http" {
+            comps.port = defaultOllamaPort
         }
+        guard let normalized = comps.string else { return nil }
 
-        return validateServerURL(url) ? url : nil
+        return validateServerURL(normalized) ? normalized : nil
     }
 
     /// Validate a server URL for http/https scheme and non-empty host.
@@ -67,8 +77,10 @@ enum URLValidator {
         // Guard against crash from malformed URLs — URL(string:) returns nil for invalid input.
         guard let parsed = URL(string: url) else { return false }
 
-        // Scheme check: Ollama only speaks HTTP or HTTPS.
-        guard let scheme = parsed.scheme,
+        // Scheme check: Ollama only speaks HTTP or HTTPS. Compared
+        // case-insensitively — a stored "HTTP://…" is a valid address, not a
+        // different protocol.
+        guard let scheme = parsed.scheme?.lowercased(),
               (scheme == "http" || scheme == "https") else { return false }
 
         // Host must exist and not be an empty string (e.g. rejecting "http://" bare).
