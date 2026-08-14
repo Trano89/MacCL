@@ -114,29 +114,81 @@ final class AppCrashReporter: ObservableObject {
 
     // MARK: - System crash logs
 
+    /// Pick up the system's own crash reports for this app.
+    ///
+    /// This looked for `*.crash` files and parsed them with
+    /// `PropertyListSerialization`. macOS has written `.ips` since Monterey,
+    /// and a `.crash` was never a property list to begin with — it was plain
+    /// text. So both the filter and the parser missed, and the panel had shown
+    /// nothing on any current macOS. (Checked on this machine: 78 `.ips`, no
+    /// `.crash`.)
+    ///
+    /// An `.ips` is two JSON documents: a one-line header carrying the app's
+    /// identity and timestamp, then the payload with `exception` and
+    /// `termination`. Only the header is required — a payload that fails to
+    /// parse still yields a dated entry rather than dropping the crash.
     private func loadSystemCrashes() {
         let urls = (try? FileManager.default.contentsOfDirectory(
             at: systemCrashesDir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
 
-        for url in urls where url.pathExtension == "crash" {
-            guard let data = try? Data(contentsOf: url),
-                  let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
-                  let processName = plist["process"] as? String,
-                  let exceptionType = plist["exception"] as? [String: Any],
-                  let codes = exceptionType["codes"] as? [Int] else { continue }
+        for url in urls where url.pathExtension == "ips" {
+            guard let entry = Self.parseIPS(at: url) else { continue }
+            systemCrashes.append(entry)
+        }
+        systemCrashes.sort { $0.date > $1.date }
+    }
 
-            guard processName.contains("MacCL") || processName.contains("ClaudeMac") else { continue }
+    /// Header timestamps look like "2026-08-07 11:23:26.00 +0200".
+    private static let ipsTimestampFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss.SS Z"
+        return f
+    }()
 
-            let summary = codes.map { String($0) }.joined(separator: ", ")
-            if let modDate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) {
-                let entry = SystemCrashEntry(
-                    date: modDate, processName: processName, version: nil,
-                    exceptionCode: summary, reportFilename: url.lastPathComponent,
-                    summaryLine: "crash/\(processName)"
-                )
-                systemCrashes.append(entry)
+    private static func parseIPS(at url: URL) -> SystemCrashEntry? {
+        guard let raw = try? String(contentsOf: url, encoding: .utf8),
+              let newline = raw.firstIndex(of: "\n"),
+              let headerData = String(raw[raw.startIndex..<newline]).data(using: .utf8),
+              let header = try? JSONSerialization.jsonObject(with: headerData) as? [String: Any]
+        else { return nil }
+
+        // `app_name` is the bundle's display name; `name` repeats it for some
+        // report types. Either is enough to recognise our own crashes.
+        let processName = (header["app_name"] as? String) ?? (header["name"] as? String) ?? ""
+        guard processName.contains("MacCL") || processName.contains("ClaudeMac") else { return nil }
+
+        let date = (header["timestamp"] as? String)
+            .flatMap { ipsTimestampFormatter.date(from: $0) }
+            ?? (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+            ?? Date()
+
+        var exceptionCode = ""
+        var summary = processName
+        let body = String(raw[raw.index(after: newline)...])
+        if let bodyData = body.data(using: .utf8),
+           let payload = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any] {
+            if let exception = payload["exception"] as? [String: Any] {
+                // e.g. type EXC_CRASH, signal SIGABRT, codes "0x0000…".
+                let type = exception["type"] as? String ?? ""
+                let signal = exception["signal"] as? String ?? ""
+                exceptionCode = [type, signal].filter { !$0.isEmpty }.joined(separator: " · ")
+            }
+            // "Abort trap: 6" says more than a raw code, when it is there.
+            if let termination = payload["termination"] as? [String: Any],
+               let indicator = termination["indicator"] as? String, !indicator.isEmpty {
+                summary = indicator
             }
         }
+
+        return SystemCrashEntry(
+            date: date,
+            processName: processName,
+            version: header["app_version"] as? String,
+            exceptionCode: exceptionCode.isEmpty ? "—" : exceptionCode,
+            reportFilename: url.lastPathComponent,
+            summaryLine: summary
+        )
     }
 
     // MARK: - App-level crash reports
@@ -146,7 +198,10 @@ final class AppCrashReporter: ObservableObject {
         let filename = "crash-\(ISO8601DateFormatter().string(from: report.date)).json"
         let url = reportsDir.appendingPathComponent(filename)
         try? data?.write(to: url)
-        DispatchQueue.main.async { [reports] in self.reports = reports + [report] }
+        // Append rather than rebuild from a captured copy: `[reports]` snapshots
+        // the array at call time, so two crashes landing close together both
+        // wrote back the same older list and one report was lost.
+        DispatchQueue.main.async { self.reports.append(report) }
     }
 
     private func loadPendingReports() {
