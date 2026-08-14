@@ -54,6 +54,18 @@ enum OllamaDiscovery {
             lock.lock(); _isScanning = false; lock.unlock()
         }
 
+        /// Publish this scan's result and hand back what the previous one saw,
+        /// in one critical section. A plain `lock()`/`unlock()` pair cannot sit
+        /// inside `runScan` itself: NSLock is unavailable from async contexts
+        /// (an error under the Swift 6 language mode), because a suspension
+        /// between the two would leave it held across a thread hop.
+        private func publish(_ servers: [String: Server]) -> [String: Server] {
+            lock.lock(); defer { lock.unlock() }
+            let previous = _discoveredServers
+            _discoveredServers = servers
+            return previous
+        }
+
         init(interval: TimeInterval = 30, delegate: ServerDiscoveryDelegate?) {
             self.interval = interval
             self.delegate = delegate
@@ -93,10 +105,7 @@ enum OllamaDiscovery {
             // The comparison has to happen against a snapshot: reading the live
             // dictionary from the main actor while this task rewrote it was the
             // race, and it also made "new" depend on when the two interleaved.
-            lock.lock()
-            let previous = _discoveredServers
-            _discoveredServers = now
-            lock.unlock()
+            let previous = publish(now)
 
             guard !newServers.isEmpty else { return }
             await MainActor.run { [weak self] in
