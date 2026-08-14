@@ -102,7 +102,9 @@ Sending sub-agents to *another* machine is the one thing a plain `claude` cannot
 
 **Watching them work** — the **Agents** button carries a spinner and a live count, so "is something running?" never needs a panel open to answer. Click it and each agent unfolds into the same material the main conversation shows: what it's thinking as it thinks it, its tool calls with their output, its answer — plus the model it is actually using and, when it was sent elsewhere, the machine it ran on. That last part is read from the agent's own replies rather than from the setting, so it describes the run in front of you.
 
-**How many at once** — same panel as the sub-agent model. The CLI's own default is 20 simultaneous sub-agents, a number written for a cloud API; MacCL sets 2, and 1 means strictly one at a time. Remote machines get their own separate allowance, since a second box is a second pool of RAM.
+**How many at once** — same panel as the sub-agent model. Set it to 1 and delegated work goes strictly one at a time; raise it and sub-agents overlap. Remote machines get their own separate allowance, since a second box is a second pool of RAM.
+
+That dial is enforced by MacCL's router, not by the CLI, for a reason worth knowing if you ever set the environment variable yourself: `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` is a ceiling that *refuses*. Past its limit a delegation comes back "Concurrent subagent limit reached. Do not retry." and that work never happens — setting it to 1 doesn't serialise your agents, it silently drops all but the first. Measured, with two agents dispatched together: one ran, one returned the error. MacCL keeps that variable at 2 or more and makes the surplus **wait** instead.
 
 > Worth checking before you blame the app: if your Ollama runs with `OLLAMA_MAX_LOADED_MODELS=1` (a common default), only one model is resident at a time, so every hop between the conversation's model and a sub-agent's evicts and reloads — measured at 110 s per swap against 7 s when both stay loaded. Raise it to at least 2, and keep `OLLAMA_CONTEXT_LENGTH` sane: at 262144 a single 4B model reserves over 40 GB, and nothing else fits.
 

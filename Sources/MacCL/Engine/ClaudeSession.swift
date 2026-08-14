@@ -53,12 +53,19 @@ struct SessionConfig {
         if inherited["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == nil {
             env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
         }
-        // The CLI lets 20 sub-agents run at once by default. Against one Ollama
-        // server that is a stampede: each turn wants the model resident, and a
-        // server holding one model at a time (the common config) spends its life
-        // evicting and reloading — 110 s per swap, measured.
+        // A ceiling against a stampede, never a scheduler — and never 1.
+        //
+        // Past this limit the CLI does NOT queue the surplus: it fails the
+        // delegation with "Concurrent subagent limit reached. Do not retry.",
+        // and that work simply never happens. Measured, with 1: of two agents
+        // the model dispatched, one ran and the other came back an error.
+        //
+        // So the floor is 2, and real serialisation is done by `AgentRouter`,
+        // which can make a request WAIT. The default of 20 still needs lowering:
+        // against one Ollama server holding a single model at a time, each extra
+        // agent evicts the last one's weights.
         if inherited["CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS"] == nil, maxConcurrentSubagents > 0 {
-            env["CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS"] = String(maxConcurrentSubagents)
+            env["CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS"] = String(max(2, maxConcurrentSubagents))
         }
         for (k, v) in extraEnv { env[k] = v }
         return env

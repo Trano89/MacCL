@@ -875,13 +875,24 @@ final class ChatViewModel: ObservableObject {
             appendNotice(.warning, L10n.t("agents_unknown_server",
                                           missing.joined(separator: ", ")))
         }
-        guard !byName.isEmpty else { return (conversationServerURL, []) }
+        // The router is also what makes "one sub-agent at a time" real. The CLI's
+        // own cap does not queue — past its limit it fails the delegation and
+        // tells the model not to retry — so serialising has to happen where a
+        // request can be made to WAIT, which is here.
+        let subagent = AgentDefinition.splitModelField(
+            subagentModel.trimmingCharacters(in: .whitespaces)).model
+        let mustSerialise = !subagent.isEmpty
+            && subagent != model.modelArg
+            && settings.maxConcurrentSubagents == 1
+        guard !byName.isEmpty || mustSerialise else { return (conversationServerURL, []) }
 
         do {
             let base = try await AgentRouter.shared.start(route: .init(
                 defaultUpstream: conversationServerURL,
                 byServerName: byName,
-                maxConcurrentPerServer: settings.maxConcurrentPerServer))
+                maxConcurrentPerServer: settings.maxConcurrentPerServer,
+                subagentModel: subagent.isEmpty ? nil : subagent,
+                maxConcurrentSubagents: settings.maxConcurrentSubagents))
             return (base, byName.keys.sorted())
         } catch {
             // Falling back to the conversation's server would send every routed
