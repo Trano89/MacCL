@@ -1044,6 +1044,15 @@ final class ChatViewModel: ObservableObject {
                 }
                 appendNotice(.warning, L10n.t("compact_failed"))
             }
+            // A reply that hit the ceiling looks terminal and isn't: the CLI
+            // process is still alive and the conversation still holds. Saying so
+            // is the whole point — this is the failure people answer by starting
+            // a new conversation they never needed.
+            if isOutputCapFailure(env) {
+                appendNotice(.warning,
+                             L10n.t("output_cap_hit", Self.formatTokens(settings.maxOutputTokens)),
+                             detail: env.result)
+            }
             isRunning = false
             // Without this the 1 s ticker publishes (and wakes SwiftUI) forever
             // after the first turn of the app's lifetime.
@@ -1142,6 +1151,32 @@ final class ChatViewModel: ObservableObject {
         "reaching the context limit",
         "prompt exceeds the maximum length",
     ]
+
+    /// 128000 → "128 000", so the notice names the same number the picker shows.
+    static func formatTokens(_ n: Int) -> String {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.groupingSeparator = "\u{202F}"
+        return f.string(from: NSNumber(value: n)) ?? String(n)
+    }
+
+    /// A turn that died because ONE REPLY was too long — not because the
+    /// conversation is full.
+    ///
+    /// Worth keeping apart from `contextLimitPatterns`: compacting shortens the
+    /// history, and the history is not what overflowed. Auto-compacting here
+    /// would spend a turn to change nothing.
+    private static let outputCapPatterns = [
+        "output token maximum",
+        "exceeded the maximum output",
+        "max_tokens",
+        "output_tokens exceeds",
+    ]
+
+    private func isOutputCapFailure(_ env: StreamEnvelope) -> Bool {
+        guard env.isError == true, let text = env.result?.lowercased() else { return false }
+        return Self.outputCapPatterns.contains { text.contains($0) }
+    }
 
     /// True when a turn died because the context window is full.
     private func shouldAutoCompact(_ env: StreamEnvelope) -> Bool {
