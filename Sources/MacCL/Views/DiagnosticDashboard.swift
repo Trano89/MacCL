@@ -260,8 +260,13 @@ struct DiagnosticDashboardView: View {
     // MARK: - Per-model Section
 
     private var perModelSection: some View {
-        ForEach(metrics.summary.perModelBreakdown.indices) { i in
-        let entry = metrics.summary.perModelBreakdown[i]
+        // `summary` is a COMPUTED property that rebuilds everything on each
+        // access, so indexing it in the body meant enumerating one array and
+        // subscripting another — and a turn recorded in between made that an
+        // out-of-range read. Snapshot once, and iterate elements rather than a
+        // bare `Range<Int>`, which SwiftUI treats as constant.
+        let rows = metrics.summary.perModelBreakdown
+        return ForEach(Array(rows.enumerated()), id: \.offset) { _, entry in
             LabeledContent(entry.modelId) {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 8) {
@@ -327,8 +332,9 @@ struct DiagnosticDashboardView: View {
     // MARK: - Slow Turns Section
 
     private var slowTurnsSection: some View {
-        ForEach(metrics.summary.slowTurns.indices, id: \.self) { i in
-            let t = metrics.summary.slowTurns[i]
+        // Same snapshot-then-iterate reason as `perModelSection`.
+        let rows = metrics.summary.slowTurns
+        return ForEach(Array(rows.enumerated()), id: \.offset) { _, t in
             HStack(spacing: 6) {
                 Image(systemName: "clock.fill")
                     .font(.caption)

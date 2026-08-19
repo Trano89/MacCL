@@ -24,6 +24,16 @@ struct NewConversationSheet: View {
     @State private var permission: PermissionMode = .bypassPermissions
     @State private var effort: EffortLevel = .high
     @State private var convInstructions = ""
+    /// `model` or `model@machine`; empty = sub-agents use the conversation's model.
+    @State private var subagentModel = ""
+    /// Model names of the saved machines other than this conversation's server.
+    @State private var otherMachines: [MachineModels] = []
+
+    struct MachineModels {
+        let server: StandbyServer
+        let models: [String]
+        var label: String { server.name.isEmpty ? server.displayHost : server.name }
+    }
 
     private var allModels: [LLMModel] { LLMModel.anthropicCatalog + serverModels }
     private var model: LLMModel? { allModels.first { $0.id == modelId } }
@@ -98,6 +108,28 @@ struct NewConversationSheet: View {
                             Button(L10n.t("choose")) { showWorkLocation = true }
                         }
                     }
+                    // Which brain the delegated work uses — a conversation-wide
+                    // choice, because the agents that actually run are the ones
+                    // Claude Code spawns itself, not files anyone authored.
+                    Picker(L10n.t("model_for_subagents"), selection: $subagentModel) {
+                        Text(L10n.t("subagent_inherit")).tag("")
+                        if !serverModels.isEmpty {
+                            Section(serverHostLabel) {
+                                ForEach(serverModels) { m in
+                                    Text(m.name).tag(m.modelArg)
+                                }
+                            }
+                        }
+                        ForEach(otherMachines, id: \.server.id) { entry in
+                            Section(entry.label) {
+                                ForEach(entry.models, id: \.self) { name in
+                                    Text(name)
+                                        .tag(name + AgentDefinition.serverSeparator
+                                             + entry.server.name)
+                                }
+                            }
+                        }
+                    }
                     Picker(L10n.t("permissions"), selection: $permission) {
                         ForEach(PermissionMode.allCases) { Text($0.label).tag($0) }
                     }
@@ -143,7 +175,9 @@ struct NewConversationSheet: View {
             permission = settings.permissionMode
             effort = settings.effortLevel
             convInstructions = vm.conversationInstructions
+            subagentModel = settings.subagentModel
             Task { await scan() }
+            Task { await loadOtherMachines() }
         }
         // Keyed task: each edit cancels the previous lookup, so a slow reply from
         // the address you just replaced can't overwrite the current one's models.
@@ -231,14 +265,32 @@ struct NewConversationSheet: View {
         }
     }
 
+    /// Models on the OTHER saved machines, so a sub-agent can be sent to one
+    /// without leaving this sheet. Machines that don't answer contribute
+    /// nothing rather than holding the form up.
+    private func loadOtherMachines() async {
+        var found: [MachineModels] = []
+        for server in settings.standbyServers where !server.name.isEmpty {
+            guard server.url != resolvedServerURL else { continue }
+            let models = await OllamaClient.listModels(baseURL: server.url)
+            if !models.isEmpty {
+                found.append(MachineModels(server: server, models: models.map(\.modelArg).sorted()))
+            }
+        }
+        otherMachines = found
+    }
+
     private var commandPreview: String {
         guard let m = model else { return "" }
         // Same builders as the real spawn (SessionConfig + ModelRouter), so the
         // preview can never drift from what actually executes — including the
         // ssh hop and the reverse tunnel when the folder is on another machine.
         let server = resolvedServerURL ?? serverURL
-        let env = m.provider == .anthropic
+        var env = m.provider == .anthropic
             ? [:] : ModelRouter.shared.environment(for: m, serverURL: server)
+        // Same variable the real launch sets: the delegated work's brain is part
+        // of what this command does, so the preview has to admit it.
+        if !subagentModel.isEmpty { env["CLAUDE_CODE_SUBAGENT_MODEL"] = subagentModel }
         let host = workHost
         var tunnel: [String] = []
         if host != nil, m.provider != .anthropic,
@@ -251,7 +303,7 @@ struct NewConversationSheet: View {
             permissionMode: permission, effort: effort,
             appendSystemPrompt: convInstructions,
             streamPartial: settings.streamPartialMessages, sessionId: "<uuid>",
-            maxOutputTokens: settings.maxOutputTokens,
+            maxOutputTokens: settings.maxOutputTokensForChildEnv,
             extraEnv: env, reverseTunnelOptions: tunnel)
         return SessionConfig.displayCommand(config: config, resumed: false)
     }
@@ -276,11 +328,13 @@ struct NewConversationSheet: View {
         vm.newConversation()
         vm.conversationServerURL = server           // this conversation's own server
         vm.conversationInstructions = convInstructions // after reset, applies to this conversation
+        vm.subagentModel = subagentModel            // which brain the delegated work uses
+        settings.subagentModel = subagentModel      // seed for the next sheet
         Task { await vm.refreshModels() }
         // Preload the chosen model while the user types their first message —
         // by send time the cold load is already paid (or well underway).
         if let m = model, m.provider != .anthropic {
-            Task.detached { await OllamaClient.warmUp(model: m.modelArg, baseURL: server) }
+            ModelWarmup.shared.start(model: m.modelArg, server: server)
         }
         dismiss()
     }

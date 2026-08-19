@@ -499,6 +499,9 @@ private struct SSHHostEditor: View {
     @State private var connecting = false
     @State private var errorText: String?
     @State private var fingerprints: [String] = []
+    /// The exact key lines the shown fingerprints were computed from. Trusting
+    /// writes these, so what the user approved is what lands in known_hosts.
+    @State private var pendingHostKeys = ""
     @State private var showDeleteConfirm = false
 
     private var isNew: Bool { store.host(id: host.id) == nil }
@@ -675,15 +678,29 @@ private struct SSHHostEditor: View {
     /// at connection time, so this has to happen before anything connects — and
     /// it's why the field can be cleared straight afterwards.
     /// Returns false when the Keychain refused, so the caller can stop.
-    private func stagePassword() -> Bool {
-        guard !password.isEmpty else { return true }
+    /// Put the typed password where ssh's askpass helper will find it.
+    ///
+    /// It has to be stored *before* connecting — the helper reads it from the
+    /// Keychain — so `staged` reports whether this attempt wrote a new one, and
+    /// the caller can take it back out if ssh rejects it.
+    private func stagePassword() -> (ok: Bool, staged: Bool) {
+        guard !password.isEmpty else { return (true, false) }
         guard SSHKeychain.save(password: password, hostId: host.id) else {
             errorText = L10n.t("keychain_save_failed")
-            return false
+            return (false, false)
         }
         hasStoredPassword = true
         password = ""
-        return true
+        return (true, true)
+    }
+
+    /// Undo a staged password that ssh refused. Without this the rejected value
+    /// stays in the Keychain while the field reads "stored" and sits empty — so
+    /// the obvious retry replays the password that just failed, with nothing on
+    /// screen suggesting otherwise.
+    private func discardStagedPassword() {
+        SSHKeychain.delete(hostId: host.id)
+        hasStoredPassword = false
     }
 
     /// Connect, verify, save, and hand the machine back so the caller can browse
@@ -693,15 +710,18 @@ private struct SSHHostEditor: View {
         connecting = true
         errorText = nil
         fingerprints = []
+        pendingHostKeys = ""
         defer { connecting = false }
-        guard stagePassword() else { return }
+        let staging = stagePassword()
+        guard staging.ok else { return }
 
         let candidate = edited
         // Host key first: until it's trusted, every other failure reads as a
         // generic "connection failed", which explains nothing.
         switch await SSHClient.hostKeyState(candidate) {
-        case .unknown(let prints):
+        case .unknown(let prints, let keys):
             fingerprints = prints
+            pendingHostKeys = keys
             return
         case .unreachable:
             // Nothing answered on port 22 — say what to check rather than
@@ -715,6 +735,12 @@ private struct SSHHostEditor: View {
         switch await SSHClient.probe(candidate) {
         case .failure(let failure):
             errorText = failure.message
+            // Only for a credential ssh actually refused, and only one this
+            // attempt wrote: a connection that merely timed out says nothing
+            // about a password that may have been working for months.
+            if case .authenticationFailed = failure, staging.staged {
+                discardStagedPassword()
+            }
         case .success(let probe):
             guard probe.hasClaude else {
                 errorText = SSHClient.Failure.claudeMissing.message
@@ -733,9 +759,10 @@ private struct SSHHostEditor: View {
     private func trustThenConnect() async {
         connecting = true
         errorText = nil
-        switch await SSHClient.acceptHostKey(edited) {
+        switch await SSHClient.acceptHostKey(edited, keys: pendingHostKeys) {
         case .success:
             fingerprints = []
+            pendingHostKeys = ""
             connecting = false
             await connect()
         case .failure(let failure):

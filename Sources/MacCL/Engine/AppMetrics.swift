@@ -2,6 +2,9 @@ import Foundation
 
 /// Per-turn usage metrics: tokens, cost, latency, errors. */
 struct TurnMetric: Codable, Sendable, Identifiable {
+    /// Identity for SwiftUI only, never persisted: a `let` with a default is
+    /// not decodable, so round-tripping silently minted a new one anyway. Made
+    /// explicit rather than left as a warning that reads like a data loss.
     let id = UUID()
     let date: Date
     let modelId: String
@@ -13,6 +16,10 @@ struct TurnMetric: Codable, Sendable, Identifiable {
     let costUSD: Double
     let latencyMs: Int
     let isError: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case date, modelId, provider, tokensInput, tokensOutput, costUSD, latencyMs, isError
+    }
 }
 
 /// Daily aggregate of cost and tokens — one row per day. */
@@ -166,10 +173,12 @@ final class AppMetrics: ObservableObject {
         defer { stateLock.unlock() }
 
         recentMetrics.append(metric)
-        totalCostUSD += costUSD
-        cumulativeInputTokens += tokensIn
-        cumulativeOutputTokens += tokensOut
 
+        // These three counters hold ONLY what has been evicted from
+        // `recentMetrics`; `summary` adds the live window back on top. Counting
+        // the new turn here as well made every figure on the diagnostics
+        // dashboard — cost and both token totals — exactly double the truth for
+        // as long as the turn stayed in the window.
         if recentMetrics.count > maxRecent {
             let removed = Array(recentMetrics[0 ..< (recentMetrics.count - maxRecent)])
             totalCostUSD += removed.reduce(0) { $0 + $1.costUSD }
@@ -198,7 +207,18 @@ final class AppMetrics: ObservableObject {
         guard let data = try? Data(contentsOf: metricsFileURL),
               let records = try? JSONDecoder().decode([TurnMetric].self, from: data) else { return }
         recentMetrics = records
-        totalCostUSD = records.reduce(0) { $0 + $1.costUSD }
+        // Deliberately NOT seeded from `records`: those turns are the live
+        // window, and `summary` already sums them. Setting the cost here made
+        // the dashboard read double from the first launch, and it seeded only
+        // cost — leaving the token totals to disagree with it.
+        //
+        // The file stores the retained window only, so what was evicted before
+        // a relaunch is not recoverable: totals then describe the turns still
+        // on record rather than all time. Correct and stated, instead of a
+        // bigger number that is wrong.
+        totalCostUSD = 0
+        cumulativeInputTokens = 0
+        cumulativeOutputTokens = 0
     }
 
     private func save() {

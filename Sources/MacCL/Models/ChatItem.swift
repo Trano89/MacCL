@@ -24,6 +24,14 @@ struct ToolActivity: Codable, Equatable {
     var isError: Bool = false
     var isRunning: Bool = true
 
+    /// The delegation tool. The CLI renamed it `Task` → `Agent`, and matching
+    /// only the old name is why the agents panel stayed empty while the
+    /// transcript filled with `Agent` cards. Both are accepted: a conversation
+    /// saved under the old name must keep reading as a sub-agent.
+    static let delegationToolNames: Set<String> = ["Agent", "Task"]
+
+    var isDelegation: Bool { Self.delegationToolNames.contains(name) }
+
     /// A short, human-friendly description of what the tool is doing.
     var headline: String {
         switch name {
@@ -39,7 +47,7 @@ struct ToolActivity: Codable, Equatable {
             return input["pattern"]?.asString ?? "glob"
         case "WebFetch":
             return input["url"]?.asString ?? "web"
-        case "Task":
+        case "Agent", "Task":
             return input["description"]?.asString ?? "sous-agent"
         default:
             return input.oneLineSummary(maxLength: 80)

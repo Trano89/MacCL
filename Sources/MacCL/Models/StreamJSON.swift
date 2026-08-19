@@ -40,10 +40,30 @@ struct StreamEnvelope: Decodable {
     // partial streaming (`--include-partial-messages`)
     let event: JSONValue?
 
+    // system / task_started · task_updated · task_notification ·
+    // background_tasks_changed — the CLI's background-task protocol. This is the
+    // authoritative account of which sub-agents exist and how they're doing;
+    // sub-agent `assistant` events alone only tell you one finished speaking.
+    let taskId: String?
+    let toolUseId: String?
+    let description: String?
+    let subagentType: String?
+    let taskDescription: String?
+    let prompt: String?
+    let status: String?
+    let summary: String?
+    let patch: JSONValue?
+    let tasks: [JSONValue]?
+
     let uuid: String?
 
     enum CodingKeys: String, CodingKey {
         case type, subtype, message, cwd, tools, model, result, usage, event, request, response, uuid
+        case description, prompt, status, summary, patch, tasks
+        case taskId = "task_id"
+        case toolUseId = "tool_use_id"
+        case subagentType = "subagent_type"
+        case taskDescription = "task_description"
         case sessionId = "session_id"
         case permissionMode
         case slashCommands = "slash_commands"

@@ -46,6 +46,39 @@ One more thing worth knowing: **each conversation is tied to the server you pick
 - Manage the models of any Ollama server from inside the app — `pull`, `rm`, `cp`, `create` — even on a remote machine
 - Adjustable reply-length cap, when a long agentic turn hits the CLI's output-token ceiling
 - Built-in update check against this repository's releases (Settings → About)
+- Conversations keep working when you switch away — their process stays alive and the transcript catches up when you come back
+- Repair Ollama models that ship no tool parser, by borrowing the one from an official model of the same family
+- Model loading between turns is shown, instead of a silent GPU behind an idle-looking app
+
+## Fixed in 0.4.4
+
+This release merges two lines of work and closes four failures that had one thing
+in common: the app looked idle while something real was happening, or work was
+silently thrown away. Each was measured against the CLI, not inferred.
+
+- **Most sub-agents failed.** `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` *refuses*
+  the surplus instead of queueing it — with nine agents delegated in one message,
+  a ceiling of 1 refused eight of them and a ceiling of 2 refused seven. It is a
+  stampede guard, never a scheduler, so it now stays at the CLI's default and
+  pacing is done where a request can actually be made to wait.
+- **Sub-agents answered with HTTP 500.** Claude Code forwards the reasoning level
+  verbatim as `output_config.effort`, and several Ollama chat templates validate
+  it and raise on anything else. Qwen3.8 accepts only `xhigh`, `medium` and `low`
+  — so `max` failed, and so did the CLI's own default of `high`. The app now
+  reads the accepted list out of the template, intersects the conversation's
+  model with the sub-agent's, and picks the closest level.
+- **A conversation you left was killed.** There was a single CLI session for the
+  whole app, stopped on every switch. Conversations now keep running in the
+  background and replay what they missed on return.
+- **Silence with the GPU busy.** Model preparation ran detached with no trace,
+  and the waiting hint stopped for good after the first token. Both now report
+  what they are waiting on, and for how long.
+
+Two ceilings worth knowing, both hard-clamped in the CLI and not configurable:
+a reply is capped at **128 000 output tokens** (asking for more silently sends
+128 000), and setting that cap in *both* `~/.claude/settings.json` and the
+environment makes the CLI fall back to its 32 000 default instead of honouring
+either.
 
 ## Installation
 
@@ -94,15 +127,21 @@ Passwords are stored in the macOS Keychain, never in the preferences or the conv
 
 > If the model is an Ollama running on *this* Mac, MacCL opens a reverse tunnel so the remote agent reaches it — because `localhost` means something else once the agent is elsewhere. If the tunnel can't be established, the session fails loudly rather than silently talking to a different Ollama.
 
-**Sub-agents** — the *Sub-agents* button next to Instructions. When the agent delegates a task, that sub-agent doesn't have to think with the same brain as the conversation: give it a small fast model for grunt work, or send it to the machine with the big GPU while the main conversation stays here.
+**Sub-agents** — when the agent delegates a task, that sub-agent doesn't have to think with the same brain as the conversation. Give the delegated work a small fast model while the big one keeps the thread, or send it to the machine with the GPU.
 
-Each sub-agent is a `.claude/agents/<name>.md` file in your working folder — Claude Code's own format, which the CLI reads by itself. MacCL just writes it, and fills the model list from the machine you picked, so an agent can never be pointed at a model that isn't installed there. On a remote project the file is written on the remote machine, because that's where the agent runs.
+It's one choice for the whole conversation, set beside the conversation's own model (model chip → **Sub-agents**, or in the new-conversation sheet). That's deliberate: the agents that actually run are the ones Claude Code spawns itself, so a per-agent setting would describe agents that mostly never appear, and say nothing about the ones that do.
 
-Sending a sub-agent to *another* machine is the one thing a plain `claude` cannot do: a process has a single backend address. MacCL adds a `@machine` suffix to the model name (`qwen3-coder:30b@nas`) and runs a small loopback router that reads it and forwards the request there. The router only starts when an agent actually names another machine — otherwise nothing sits between the CLI and your server. A suffix naming a machine you haven't configured is refused outright, never quietly sent somewhere else, and the transcript names every machine a turn fanned out to.
+Sending sub-agents to *another* machine is the one thing a plain `claude` cannot do: a process has a single backend address. Pick a model from another machine and MacCL tags it `model@machine`, then runs a small loopback router that reads the tag and forwards the request there. The router only starts when another machine is actually named — otherwise nothing sits between the CLI and your server. A machine you haven't configured is refused outright, never quietly sent somewhere else, and the transcript names every machine a turn fanned out to.
 
-**How many at once** — same panel. The CLI's own default is 20 simultaneous sub-agents, a number written for a cloud API; MacCL sets 2, and 1 means strictly one at a time. Remote machines get their own separate allowance, since a second box is a second pool of RAM.
+**Watching them work** — the **Agents** button carries a spinner and a live count, so "is something running?" never needs a panel open to answer. Click it and each agent unfolds into the same material the main conversation shows: what it's thinking as it thinks it, its tool calls with their output, its answer — plus the model it is actually using and, when it was sent elsewhere, the machine it ran on. That last part is read from the agent's own replies rather than from the setting, so it describes the run in front of you.
+
+**How many at once** — same panel as the sub-agent model. Set it to 1 and delegated work goes strictly one at a time; raise it and sub-agents overlap. Remote machines get their own separate allowance, since a second box is a second pool of RAM.
+
+That dial is enforced by MacCL's router, not by the CLI, for a reason worth knowing if you ever set the environment variable yourself: `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` is a ceiling that *refuses*. Past its limit a delegation comes back "Concurrent subagent limit reached. Do not retry." and that work never happens — setting it to 1 doesn't serialise your agents, it silently drops all but the first. Measured, with two agents dispatched together: one ran, one returned the error. MacCL keeps that variable at 2 or more and makes the surplus **wait** instead.
 
 > Worth checking before you blame the app: if your Ollama runs with `OLLAMA_MAX_LOADED_MODELS=1` (a common default), only one model is resident at a time, so every hop between the conversation's model and a sub-agent's evicts and reloads — measured at 110 s per swap against 7 s when both stay loaded. Raise it to at least 2, and keep `OLLAMA_CONTEXT_LENGTH` sane: at 262144 a single 4B model reserves over 40 GB, and nothing else fits.
+
+> Hand-written `.claude/agents/*.md` files still work — they're Claude Code's own mechanism, and MacCL reads them only to learn which machines they name, so the router can open a route. The app doesn't write them.
 
 **Coding instructions** — sidebar → *Manage instructions*: Markdown files you edit inside the app, ticked to be injected into the system prompt. A conversation can also get its own instructions when you create it. The project `CLAUDE.md` tab edits the file in the working folder — on the remote machine too, when that's where you're working.
 

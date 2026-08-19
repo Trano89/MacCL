@@ -17,7 +17,7 @@ struct SessionConfig {
     var streamPartial: Bool
     var sessionId: String
     /// Cap on one reply's output tokens. 0 = leave the CLI's own default alone.
-    var maxOutputTokens: Int = 64_000
+    var maxOutputTokens: Int = 0   // 0 = laissé à ~/.claude/settings.json
     /// How many sub-agents may run at once. 0 = leave the CLI's default (20).
     var maxConcurrentSubagents: Int = 2
     /// Extra environment (points `claude` at the conversation's Ollama server).
@@ -53,12 +53,22 @@ struct SessionConfig {
         if inherited["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == nil {
             env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
         }
-        // The CLI lets 20 sub-agents run at once by default. Against one Ollama
-        // server that is a stampede: each turn wants the model resident, and a
-        // server holding one model at a time (the common config) spends its life
-        // evicting and reloading — 110 s per swap, measured.
-        if inherited["CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS"] == nil, maxConcurrentSubagents > 0 {
-            env["CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS"] = String(maxConcurrentSubagents)
+        // A ceiling against a stampede, never a scheduler — and never a throttle.
+        //
+        // Past this limit the CLI does NOT queue the surplus: it fails the
+        // delegation with "Concurrent subagent limit reached. Do not retry.",
+        // and that work simply never happens. Measured with nine agents
+        // dispatched in a single message: a ceiling of 1 refused eight of them,
+        // 2 refused seven, 20 refused none.
+        //
+        // So it must not be derived from `maxConcurrentSubagents`, which is the
+        // number for AgentRouter's queue and defaults to 2 — doing that quietly
+        // destroyed most of what the model delegated. It stays at the CLI's own
+        // default, high enough never to refuse. Pacing belongs to `AgentRouter`,
+        // which can make a request WAIT; and where the router is not in the path
+        // Ollama queues the surplus itself rather than failing it.
+        if inherited["CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS"] == nil {
+            env["CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS"] = String(max(20, maxConcurrentSubagents))
         }
         for (k, v) in extraEnv { env[k] = v }
         return env
@@ -81,6 +91,11 @@ struct SessionConfig {
             args += ["--permission-mode", permissionMode.cliValue]
         }
         if streamPartial { args += ["--include-partial-messages"] }
+        // Without this, a sub-agent is a black box: the CLI emits NOTHING from
+        // inside it, so the agents panel had nothing to show but the Task card
+        // itself. The flag is what makes a sub-agent's text and thinking arrive
+        // as normal events carrying `parent_tool_use_id`.
+        args += ["--forward-subagent-text"]
         if !appendSystemPrompt.isEmpty {
             args += ["--append-system-prompt",
                      forDisplay ? "\"$(cat instructions/*.md)\"" : appendSystemPrompt]
@@ -252,13 +267,10 @@ final class ClaudeSession {
         proc.standardError = stderrPipe
         self.stdinPipe = stdinPipe
 
-        // Make pipe fds non-blocking instead of globally suppressing SIGPIPE.
-        // signal(SIGPIPE, SIG_IGN) is DANGEROUS — it affects ALL threads in the app,
-        // not just this process. A library that legitimately writes to a closed socket
-        // would silently crash rather than getting an EPIPE error.
-        setNonBlocking(stdinPipe.fileHandleForWriting.fileDescriptor)
-        setNonBlocking(stdoutPipe.fileHandleForReading.fileDescriptor)
-        setNonBlocking(stderrPipe.fileHandleForReading.fileDescriptor)
+        // Writing to a `claude` that has just died must raise EPIPE, not SIGPIPE,
+        // whose default action is to kill THIS app. Only the write end needs it:
+        // reading a closed pipe returns EOF, it never signals.
+        suppressSIGPIPE(stdinPipe.fileHandleForWriting.fileDescriptor)
 
         let stdoutHandle = stdoutPipe.fileHandleForReading
         let stderrHandle = stderrPipe.fileHandleForReading
@@ -287,10 +299,21 @@ final class ClaudeSession {
 
     // MARK: - Pipe helpers
 
-    private func setNonBlocking(_ fd: Int32) {
-        let flags = fcntl(fd, F_GETFD)
-        guard flags >= 0 else { return }
-        _ = fcntl(fd, F_SETFD, flags | O_NONBLOCK)
+    /// Ask the kernel for EPIPE instead of SIGPIPE on this one descriptor.
+    ///
+    /// The alternative, `signal(SIGPIPE, SIG_IGN)`, is process-wide: it changes
+    /// the behaviour of every library in the app, which is why it was rejected
+    /// here in the first place. `F_SETNOSIGPIPE` is the per-descriptor version
+    /// and needs no such trade.
+    ///
+    /// What stood here before asked for `O_NONBLOCK` via `F_SETFD`. That call
+    /// silently did nothing: `F_SETFD` carries *descriptor* flags (`FD_CLOEXEC`),
+    /// while `O_NONBLOCK` is a *status* flag belonging to `F_SETFL`. So the
+    /// protection its comment described never existed — and had it worked, a
+    /// non-blocking stdin would have made `write` partial, truncating a turn's
+    /// JSON mid-line instead of delivering it.
+    private func suppressSIGPIPE(_ fd: Int32) {
+        _ = fcntl(fd, F_SETNOSIGPIPE, 1)
     }
 
     // MARK: - Writing

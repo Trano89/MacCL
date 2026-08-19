@@ -24,10 +24,16 @@ import Network
 /// to the default upstream — that is the one behaviour this project has
 /// consistently refused (see the removal of hidden routing in 028651d).
 ///
-/// Concurrency: only *routed* requests are gated, one semaphore per named
-/// machine. Traffic to the conversation's own server is left alone because the
-/// CLI already caps it (`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`), and gating the
-/// main loop here would stall the conversation behind its own sub-agents.
+/// Concurrency is also decided here, and not by the CLI. Its own
+/// `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` is a ceiling that REFUSES: past the
+/// limit a delegation comes back "Concurrent subagent limit reached. Do not
+/// retry." and that work never happens — so it cannot express "one at a time".
+/// A request can be made to wait here, which is what serialising means.
+///
+/// Two gates, both queueing rather than failing: one per named machine, and one
+/// for sub-agent work — recognised by the model it carries, so it applies on the
+/// conversation's own server too. The main loop carries the conversation's own
+/// model, is matched by neither, and so never waits behind its own sub-agents.
 @MainActor
 final class AgentRouter {
     static let shared = AgentRouter()
@@ -41,16 +47,30 @@ final class AgentRouter {
         var byServerName: [String: String]
         /// Max simultaneous in-flight requests per named machine.
         var maxConcurrentPerServer: Int
+        /// The model this conversation's sub-agents think with, bare (no
+        /// `@machine` suffix). Requests carrying it are sub-agent work and are
+        /// gated as such — including on the conversation's own server.
+        var subagentModel: String?
+        /// How many sub-agents may be working at once. 1 makes them strictly
+        /// serial, by making the surplus WAIT.
+        ///
+        /// This lives here rather than in `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`
+        /// because that variable does not queue: past its limit the CLI fails
+        /// the delegation outright — "Concurrent subagent limit reached. Do not
+        /// retry." — and the work simply never happens. Measured, not inferred.
+        var maxConcurrentSubagents: Int
     }
+
+    /// Gate key for sub-agent work aimed at the conversation's own server.
+    /// Not a server name, and cannot collide with one: a `StandbyServer` name
+    /// can't contain a control character.
+    static let subagentGateKey = "\u{1}subagents"
 
     private var core: RouterCore?
     /// The loopback port the router listens on, once started.
     private(set) var port: UInt16?
 
     var isRunning: Bool { port != nil }
-
-    /// The base URL to hand `claude` — nil when the router isn't up.
-    var baseURL: String? { port.map { "http://127.0.0.1:\($0)" } }
 
     private init() {}
 
@@ -59,20 +79,27 @@ final class AgentRouter {
     /// changes server mid-conversation doesn't need relaunching.
     @discardableResult
     func start(route: Route) async throws -> String {
-        if let core {
+        // `core` and `port` are set together and cleared together, but reading
+        // them as two independent optionals invited a "re-pointed, returned
+        // empty string" path that would have set ANTHROPIC_BASE_URL="" — a
+        // session pointed at nothing. Require both, or start fresh.
+        if let core, let port {
             await core.update(route: route)
             AppLog.info("router", "re-pointed: default=\(route.defaultUpstream) "
                         + "servers=\(route.byServerName.keys.sorted().joined(separator: ","))")
-            return baseURL ?? ""
+            return Self.address(port: port)
         }
+        stop()   // a half-built router from a failed start must not linger
         let core = RouterCore(route: route)
         let bound = try await core.start()
         self.core = core
         self.port = bound
         AppLog.info("router", "listening on 127.0.0.1:\(bound) default=\(route.defaultUpstream) "
                     + "servers=\(route.byServerName.keys.sorted().joined(separator: ","))")
-        return "http://127.0.0.1:\(bound)"
+        return Self.address(port: bound)
     }
+
+    private static func address(port: UInt16) -> String { "http://127.0.0.1:\(port)" }
 
     func stop() {
         core?.stop()
@@ -263,7 +290,9 @@ private final class OneShot: @unchecked Sendable {
 /// The mutable half, isolated so the route can be re-pointed mid-flight.
 private actor RouterState {
     private var route = AgentRouter.Route(defaultUpstream: "", byServerName: [:],
-                                          maxConcurrentPerServer: 1)
+                                          maxConcurrentPerServer: 1,
+                                          subagentModel: nil,
+                                          maxConcurrentSubagents: 2)
     private var inFlight: [String: Int] = [:]
     private var waiters: [String: [CheckedContinuation<Void, Never>]] = [:]
 
@@ -288,8 +317,16 @@ private actor RouterState {
         }
 
         let (model, serverName) = AgentDefinition.splitModelField(rawModel)
+        // Sub-agent work is recognised by the model it carries. That is what
+        // lets the gate apply on the conversation's own server too, where there
+        // is no suffix to route on — while the main loop, which carries the
+        // conversation's model, is never gated and so never waits on its own
+        // sub-agents.
+        let isSubagent = route.subagentModel.map { !$0.isEmpty && model == $0 } ?? false
+
         guard !serverName.isEmpty else {
-            return .forward(upstream: route.defaultUpstream, body: request.body, serverLabel: nil)
+            return .forward(upstream: route.defaultUpstream, body: request.body,
+                            serverLabel: isSubagent ? AgentRouter.subagentGateKey : nil)
         }
         guard let upstream = route.byServerName[serverName] else {
             return .unknownServer(serverName)
@@ -304,7 +341,9 @@ private actor RouterState {
     // MARK: Per-server concurrency
 
     func acquire(server: String) async -> Slot {
-        let cap = max(1, route.maxConcurrentPerServer)
+        let cap = server == AgentRouter.subagentGateKey
+            ? max(1, route.maxConcurrentSubagents)
+            : max(1, route.maxConcurrentPerServer)
         while (inFlight[server] ?? 0) >= cap {
             await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
                 waiters[server, default: []].append(c)

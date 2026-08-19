@@ -623,7 +623,11 @@ enum SSHClient {
 
     enum HostKeyState: Equatable, Sendable {
         case known
-        case unknown([String])   // fingerprints offered by the machine
+        /// The fingerprints shown to the user, together with the EXACT
+        /// `known_hosts` lines they were computed from. Both travel as one
+        /// value on purpose: trusting must write these bytes, never the result
+        /// of a second scan (see `acceptHostKey`).
+        case unknown(fingerprints: [String], keys: String)
         /// Nothing answered on the SSH port. Deliberately carries no message:
         /// this runs off the main actor where L10n isn't reachable, and an
         /// English fragment glued onto a French sentence is worse than none.
@@ -645,8 +649,13 @@ enum SSHClient {
         if await Task.detached(priority: .userInitiated, operation: { isKnown(host) }).value {
             return .known
         }
-        let prints = await scanFingerprints(host)
-        return prints.isEmpty ? .unreachable : .unknown(prints)
+        // ONE scan. Deriving the fingerprints here and re-scanning at trust
+        // time left a window as long as the user's reading of the dialog, in
+        // which a machine on the path could offer key A to be approved and key
+        // B to be written.
+        let scanned = await Task.detached(priority: .userInitiated) { scanKeys(host) }.value
+        let prints = await fingerprints(ofKeys: scanned)
+        return prints.isEmpty ? .unreachable : .unknown(fingerprints: prints, keys: scanned)
     }
 
     private static func isKnown(_ host: SSHHost) -> Bool {
@@ -669,12 +678,13 @@ enum SSHClient {
         return out.stdout
     }
 
-    /// Human-readable fingerprints ("256 SHA256:… ED25519") for confirmation.
-    private static func scanFingerprints(_ host: SSHHost) async -> [String] {
-        await Task.detached(priority: .userInitiated) { () -> [String] in
-            let keys = scanKeys(host)
-            guard !keys.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  let keygen = BinaryLocator.find("ssh-keygen") else { return [] }
+    /// Human-readable fingerprints ("256 SHA256:… ED25519") of key lines we
+    /// already hold — never of a fresh scan, so what is displayed and what is
+    /// trusted are the same bytes.
+    private static func fingerprints(ofKeys keys: String) async -> [String] {
+        guard !keys.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
+        return await Task.detached(priority: .userInitiated) { () -> [String] in
+            guard let keygen = BinaryLocator.find("ssh-keygen") else { return [] }
             let out = execute(Launch(executable: keygen, arguments: ["-lf", "-"],
                                      environment: [:]),
                               stdin: Data(keys.utf8), timeout: 10)
@@ -684,11 +694,12 @@ enum SSHClient {
         }.value
     }
 
-    /// Trust this machine's key: append what ssh-keyscan reports to known_hosts.
-    /// Only ever called from the button the user pressed after reading the
-    /// fingerprint.
-    static func acceptHostKey(_ host: SSHHost) async -> Result<Void, Failure> {
-        let keys = await Task.detached(priority: .userInitiated) { scanKeys(host) }.value
+    /// Trust this machine's key by appending to known_hosts the very lines the
+    /// user was shown the fingerprint of — passed in from `hostKeyState`, not
+    /// fetched again here. Re-scanning at this point would mean approving one
+    /// key and trusting whatever a second scan returned, which for a host about
+    /// to run an agent with bypassed permissions is the whole ballgame.
+    static func acceptHostKey(_ host: SSHHost, keys: String) async -> Result<Void, Failure> {
         let trimmed = keys.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .failure(.noHostKey) }
 
@@ -711,7 +722,10 @@ enum SSHClient {
         } catch {
             return .failure(.remoteError(error.localizedDescription))
         }
-        AppLog.info("ssh", "host key accepted for \(knownHostsSpec(host))")
+        // Recorded whatever the verbosity setting says: "this machine was
+        // trusted, on this date" is the audit trail behind an agent that runs
+        // shell commands over there, not a diagnostic detail.
+        AppLog.write("ssh", "host key accepted for \(knownHostsSpec(host))")
         return .success(())
     }
 

@@ -9,11 +9,13 @@ import SwiftUI
 ///     cp   qwen3:8b mon-qwen              duplicate under a new name
 ///     create mon-qwen from qwen3:8b num_ctx 32768
 ///                                         derived model with baked-in parameters
+///     fix  hf.co/some/repack:Q8_0         rebuild it with a working tool parser
 struct ModelManagerView: View {
     let serverURL: String
     let onBack: () -> Void
 
     @State private var models: [OllamaClient.InstalledModel] = []
+    @State private var details: [String: OllamaClient.ModelDetails] = [:]
     @State private var command = ""
     @State private var log: [String] = []
     @State private var busy = false
@@ -47,12 +49,31 @@ struct ModelManagerView: View {
                     }
                     ForEach(models) { m in
                         HStack {
-                            Text(m.name)
-                                .font(.system(.body, design: .monospaced))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(m.name)
+                                    .font(.system(.body, design: .monospaced))
+                                if needsRepair(m.name) {
+                                    Label(L10n.t("no_tool_parser"), systemImage: "exclamationmark.triangle")
+                                        .font(.caption2)
+                                        .foregroundStyle(.orange)
+                                }
+                            }
                             Spacer()
                             Text(m.sizeBytes.formattedBytes)
                                 .foregroundStyle(.secondary)
                                 .font(.caption)
+                            if needsRepair(m.name) {
+                                Button {
+                                    run("fix \(m.name)")
+                                } label: {
+                                    Image(systemName: "bandage")
+                                        .foregroundStyle(.orange)
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(busy)
+                                .help(L10n.t("repair_help"))
+                                .accessibilityLabel("\(L10n.t("repair")) \(m.name)")
+                            }
                             Button {
                                 run("rm \(m.name)")
                             } label: {
@@ -110,6 +131,23 @@ struct ModelManagerView: View {
 
     private func refresh() async {
         models = await OllamaClient.installedModels(baseURL: serverURL)
+        // Load every model's directives in parallel — that's what tells us which
+        // ones would have to have a tool parser generated for them.
+        var map: [String: OllamaClient.ModelDetails] = [:]
+        await withTaskGroup(of: (String, OllamaClient.ModelDetails?).self) { group in
+            for m in models {
+                group.addTask { (m.name, await OllamaClient.details(model: m.name, baseURL: serverURL)) }
+            }
+            for await (name, d) in group { map[name] = d }
+        }
+        details = map
+    }
+
+    /// Worth offering a repair: the model would need a generated parser, and a
+    /// sibling of the same family can lend a built-in one.
+    private func needsRepair(_ name: String) -> Bool {
+        details[name]?.lacksToolParser == true
+            && OllamaClient.parserDonor(for: name, details: details) != nil
     }
 
     private func runCurrent() {
@@ -148,6 +186,16 @@ struct ModelManagerView: View {
                 }
                 error = await OllamaClient.createModel(name: words[1], from: words[3],
                                                        parameters: params, baseURL: serverURL)
+            case ("fix", 2), ("fix", 4) where words[2].lowercased() == "as":
+                // fix MODEL [as NEWNAME]
+                let source = words[1]
+                let target = words.count == 4 ? words[3] : OllamaClient.repairedName(for: source)
+                if let donor = OllamaClient.parserDonor(for: source, details: details) {
+                    log.append("  \(L10n.t("repair_using", donor.parser)) (\(donor.name))")
+                }
+                error = await OllamaClient.repairToolParser(model: source, as: target,
+                                                            details: details, baseURL: serverURL)
+                if error == nil { log.append("  → \(target)") }
             default:
                 error = L10n.t("cmd_unknown")
             }

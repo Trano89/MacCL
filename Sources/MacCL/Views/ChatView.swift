@@ -6,14 +6,16 @@ struct ChatView: View {
     @ObservedObject var vm: ChatViewModel
     @EnvironmentObject var settings: AppSettings
     @ObservedObject private var instructions = InstructionsStore.shared
-    @ObservedObject private var agentStore = AgentStore.shared
     @FocusState private var composerFocused: Bool
     @State private var showInstructions = false
-    @State private var showAgentsLibrary = false
+    @State private var modelPickerTarget = 0
     @State private var showSlashCommands = false
     @State private var showModelPicker = false
     @State private var showServerPicker = false
     @State private var showTokenPopover = false
+    /// Model loading that happens between turns — real GPU work that used to
+    /// leave no trace anywhere in the interface.
+    @ObservedObject private var warmup = ModelWarmup.shared
     @State private var showWorkLocation = false
 
     private static let fallbackSlashCommands = [
@@ -30,8 +32,8 @@ struct ChatView: View {
             }
             if vm.showAgentsPanel {
                 Divider()
-                AgentsPanel(vm: vm)
-                    .frame(width: 320)
+                AgentsPanel(vm: vm, onManage: { modelPickerTarget = 1; showModelPicker = true })
+                    .frame(width: 340)
                     .transition(.move(edge: .trailing))
             }
         }
@@ -106,6 +108,7 @@ struct ChatView: View {
             if vm.isBlockedByServer {
                 serverDownBanner
             }
+            if warmup.isPreparing { preparingBanner }
             if !vm.attachments.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
@@ -175,15 +178,6 @@ struct ChatView: View {
         .sheet(isPresented: $showInstructions) {
             InstructionsView()
         }
-        .sheet(isPresented: $showAgentsLibrary) {
-            AgentsLibraryView(conversationServerURL: vm.conversationServerURL,
-                              workLocation: settings.workLocation)
-        }
-        // The agent list belongs to the working folder, so it has to be re-read
-        // whenever that folder (or the machine it's on) changes.
-        .task(id: settings.workLocationHostId + "\u{1F}" + settings.workingDirectory) {
-            await agentStore.load(location: settings.workLocation)
-        }
     }
 
     /// Claude Code slash commands, inserted into the composer.
@@ -217,10 +211,12 @@ struct ChatView: View {
             folderButton
             instructionsButton
             agentsButton
+            subagentModelChip
             Spacer(minLength: 0)
             tokenChip
         }
     }
+
 
     /// Bottom-right token gauge: the conversation's current context footprint.
     /// Click → detail + one-click context compaction.
@@ -228,7 +224,10 @@ struct ChatView: View {
         Button {
             showTokenPopover = true
         } label: {
-            Label(Self.formatTokens(vm.contextTokens), systemImage: "chart.pie")
+            // "23,4k / 262k" — a bare number says nothing about how full it is.
+            Label(vm.contextCeiling.map {
+                "\(Self.formatTokens(vm.contextTokens)) / \(Self.formatTokens($0))"
+            } ?? Self.formatTokens(vm.contextTokens), systemImage: "chart.pie")
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
@@ -243,11 +242,11 @@ struct ChatView: View {
                     }
                     GridRow {
                         Text(L10n.t("tokens_in")).foregroundStyle(.secondary)
-                        Text(Self.formatTokens(vm.totalInputTokens)).monospacedDigit()
+                        Text(Self.formatTokens(vm.displayedInputTokens)).monospacedDigit()
                     }
                     GridRow {
                         Text(L10n.t("tokens_out")).foregroundStyle(.secondary)
-                        Text(Self.formatTokens(vm.totalOutputTokens)).monospacedDigit()
+                        Text(Self.formatTokens(vm.displayedOutputTokens)).monospacedDigit()
                     }
                 }
                 Divider()
@@ -260,7 +259,10 @@ struct ChatView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accent)
-                .disabled(!vm.canSend || vm.items.isEmpty)
+                // Was `!vm.canSend`, which also requires a composed message —
+                // so the button greyed out precisely when the context is full
+                // and you have nothing typed, which is when you want it.
+                .disabled(!vm.canCompact)
                 Text(L10n.t("compact_hint"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -282,6 +284,28 @@ struct ChatView: View {
 
     /// The conversation's bound server is down: say so, offer to change it,
     /// and let the automatic watch lift the block when it's back.
+    /// "Preparing <model> — 47 s": the GPU is loading weights, and the app says
+    /// so instead of showing an idle "Ready".
+    private var preparingBanner: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                if let job = warmup.current {
+                    Text(L10n.t("preparing_model", "\(job.model) · \(job.host)"))
+                        .font(.callout)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text("\(Int(context.date.timeIntervalSince(job.startedAt))) s")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(10)
+            .background(Theme.accentSoft, in: RoundedRectangle(cornerRadius: Theme.corner))
+        }
+    }
+
     private var serverDownBanner: some View {
         HStack(spacing: 8) {
             Image(systemName: "wifi.exclamationmark")
@@ -318,6 +342,7 @@ struct ChatView: View {
 
     private var modelMenu: some View {
         Button {
+            modelPickerTarget = 0
             showModelPicker = true
         } label: {
             Label(vm.selectedModel.name,
@@ -327,7 +352,27 @@ struct ChatView: View {
         .controlSize(.small)
         .help(L10n.t("model_help"))
         .sheet(isPresented: $showModelPicker) {
-            ModelPickerSheet(vm: vm)
+            ModelPickerSheet(vm: vm, initialTarget: modelPickerTarget)
+        }
+    }
+
+    /// Shown only when the sub-agents think with something other than the
+    /// conversation's model — otherwise there is nothing to say, and a chip
+    /// repeating the model beside itself is noise.
+    @ViewBuilder private var subagentModelChip: some View {
+        if !vm.subagentModel.isEmpty {
+            Button {
+                modelPickerTarget = 1
+                showModelPicker = true
+            } label: {
+                let parts = AgentDefinition.splitModelField(vm.subagentModel)
+                Label(L10n.t("subagents_on", parts.serverName.isEmpty
+                             ? parts.model : "\(parts.model) · \(parts.serverName)"),
+                      systemImage: "person.2")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help(L10n.t("subagent_model_hint"))
         }
     }
 
@@ -409,20 +454,32 @@ struct ChatView: View {
         .help(L10n.t("instructions_help"))
     }
 
-    /// The working folder's sub-agents. The count is worth showing: an agent
-    /// only exists as a file, so "none" and "not saved" look identical without it.
+    /// Toggles the agents panel — and, on its own, answers "is something
+    /// running?": a spinner and a live count, so that question never requires
+    /// opening anything. The definitions library is reached from inside the
+    /// panel, because watching is the frequent need and configuring is not.
     private var agentsButton: some View {
         Button {
-            showAgentsLibrary = true
+            withAnimation(.easeOut(duration: 0.18)) { vm.showAgentsPanel.toggle() }
         } label: {
-            Label(agentStore.agents.isEmpty
-                  ? L10n.t("agents_library")
-                  : "\(L10n.t("agents_library")) · \(agentStore.agents.count)",
-                  systemImage: "person.2.badge.gearshape")
+            HStack(spacing: 5) {
+                Image(systemName: "person.2")
+                Text(L10n.t("agents_title"))
+                if vm.runningAgentCount > 0 {
+                    ProgressView().controlSize(.mini)
+                    Text("\(vm.runningAgentCount)")
+                        .font(.caption.weight(.semibold).monospacedDigit())
+                } else if !vm.agents.isEmpty {
+                    Text("\(vm.agents.count)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .help(L10n.t("agents_library_empty"))
+        .tint(vm.runningAgentCount > 0 ? settings.accentColor : nil)
+        .help(L10n.t("agents_help"))
     }
 
     /// Just the folder locally; prefixed with the machine when it's elsewhere,

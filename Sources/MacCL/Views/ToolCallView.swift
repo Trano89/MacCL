@@ -3,6 +3,9 @@ import SwiftUI
 struct ToolCallView: View {
     let activity: ToolActivity
     var onOpenAgent: ((String) -> Void)? = nil
+    /// Transcript cards sit indented under the message they belong to; the same
+    /// card inside the agents panel has no message above it, so it starts flush.
+    var indent: CGFloat = 38
     @State private var expanded = false
 
     var body: some View {
@@ -10,7 +13,7 @@ struct ToolCallView: View {
             header
             // The link into the agents panel: every Task card carries one, so a
             // sub-agent is always one click from its instructions and progress.
-            if activity.name == "Task", let onOpenAgent {
+            if activity.isDelegation, let onOpenAgent {
                 Divider().padding(.horizontal, 12)
                 Button {
                     onOpenAgent(activity.toolUseId)
@@ -29,7 +32,7 @@ struct ToolCallView: View {
         }
         .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.corner))
         .overlay(RoundedRectangle(cornerRadius: Theme.corner).stroke(Theme.hairline))
-        .padding(.leading, 38)
+        .padding(.leading, indent)
     }
 
     private var header: some View {
@@ -103,7 +106,7 @@ struct ToolCallView: View {
         case "Grep": return "magnifyingglass"
         case "Glob": return "folder"
         case "WebFetch", "WebSearch": return "globe"
-        case "Task": return "person.2"
+        case "Agent", "Task": return "person.2"
         case "TodoWrite": return "checklist"
         default: return "wrench.and.screwdriver"
         }
