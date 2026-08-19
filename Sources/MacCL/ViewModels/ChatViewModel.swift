@@ -519,6 +519,7 @@ final class ChatViewModel: ObservableObject {
         streamedThinkingThisMessage = false
         lastSentBlocks = blocks
         autoCompactTriedThisTurn = false
+        transientRetries = 0
         if currentConversationId == nil {
             let newId = UUID().uuidString
             currentConversationId = newId
@@ -1307,6 +1308,21 @@ final class ChatViewModel: ObservableObject {
                 }
                 appendNotice(.warning, L10n.t("compact_failed"))
             }
+            // A malformed tool call from the model kills the whole turn: Ollama's
+            // built-in parser answers HTTP 500 ("parse … call to X: missing …
+            // wrapper") and everything the turn had left to do is lost. Measured
+            // on muse-glimmer: three identical requests in a row parsed fine, so
+            // the fault is an occasional bad sample, not an incompatibility —
+            // exactly what a resend fixes, and what the CLI itself means by
+            // "usually temporary". Bounded, so a real outage still surfaces.
+            if shouldRetryTransient(env), let blocks = lastSentBlocks {
+                transientRetries += 1
+                appendNotice(.info, L10n.t("transient_retry", "\(transientRetries)/\(Self.maxTransientRetries)"),
+                             detail: env.result)
+                AppLog.write("session", "transient gateway failure — resending turn (\(transientRetries))")
+                Task { await launchOrContinue(blocks) }
+                return
+            }
             // A reply that hit the ceiling looks terminal and isn't: the CLI
             // process is still alive and the conversation still holds. Saying so
             // is the whole point — this is the failure people answer by starting
@@ -1458,6 +1474,27 @@ final class ChatViewModel: ObservableObject {
     }
 
     /// Match actual Claude Code v2.x context-limit error messages.
+    /// Gateway failures that mean "sample again", not "this cannot work".
+    /// The CLI says so itself in the body: "usually temporary — try again".
+    private static let transientGatewayPatterns = [
+        "missing atem function_calls wrapper",
+        "usually temporary",
+        "server-side issue",
+        "internal server error",
+    ]
+    /// How many times one turn may be resent before we let the failure stand.
+    private static let maxTransientRetries = 2
+    private var transientRetries = 0
+
+    /// True when the turn died from a transient gateway fault and can be resent.
+    private func shouldRetryTransient(_ env: StreamEnvelope) -> Bool {
+        guard env.isError == true, transientRetries < Self.maxTransientRetries,
+              let text = env.result?.lowercased() else { return false }
+        // Never confuse it with a context overflow, which needs compaction.
+        guard !Self.contextLimitPatterns.contains(where: { text.contains($0) }) else { return false }
+        return Self.transientGatewayPatterns.contains { text.contains($0) }
+    }
+
     private static let contextLimitPatterns = [
         "exceeds the available context size",
         "exceed_context_size",

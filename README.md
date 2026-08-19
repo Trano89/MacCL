@@ -50,6 +50,15 @@ One more thing worth knowing: **each conversation is tied to the server you pick
 - Repair Ollama models that ship no tool parser, by borrowing the one from an official model of the same family
 - Model loading between turns is shown, instead of a silent GPU behind an idle-looking app
 
+## Fixed in 0.4.5
+
+- **A malformed tool call no longer costs you the turn.** Ollama's built-in
+  parsers answer HTTP 500 when a model emits a tool call in the wrong shape
+  (`parse … call to TaskUpdate: missing … wrapper`), and everything the turn had
+  left to do was lost. Measured on `muse-glimmer:30b`: three identical requests
+  in a row parsed perfectly, so this is an occasional bad sample rather than an
+  incompatibility — the app now resends the turn, at most twice, and says so.
+
 ## Fixed in 0.4.4
 
 This release merges two lines of work and closes four failures that had one thing
