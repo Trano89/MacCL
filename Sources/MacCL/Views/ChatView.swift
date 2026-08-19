@@ -217,13 +217,17 @@ struct ChatView: View {
         }
     }
 
+
     /// Bottom-right token gauge: the conversation's current context footprint.
     /// Click → detail + one-click context compaction.
     private var tokenChip: some View {
         Button {
             showTokenPopover = true
         } label: {
-            Label(Self.formatTokens(vm.contextTokens), systemImage: "chart.pie")
+            // "23,4k / 262k" — a bare number says nothing about how full it is.
+            Label(vm.contextCeiling.map {
+                "\(Self.formatTokens(vm.contextTokens)) / \(Self.formatTokens($0))"
+            } ?? Self.formatTokens(vm.contextTokens), systemImage: "chart.pie")
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
@@ -238,11 +242,11 @@ struct ChatView: View {
                     }
                     GridRow {
                         Text(L10n.t("tokens_in")).foregroundStyle(.secondary)
-                        Text(Self.formatTokens(vm.totalInputTokens)).monospacedDigit()
+                        Text(Self.formatTokens(vm.displayedInputTokens)).monospacedDigit()
                     }
                     GridRow {
                         Text(L10n.t("tokens_out")).foregroundStyle(.secondary)
-                        Text(Self.formatTokens(vm.totalOutputTokens)).monospacedDigit()
+                        Text(Self.formatTokens(vm.displayedOutputTokens)).monospacedDigit()
                     }
                 }
                 Divider()

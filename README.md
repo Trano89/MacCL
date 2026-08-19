@@ -46,6 +46,39 @@ One more thing worth knowing: **each conversation is tied to the server you pick
 - Manage the models of any Ollama server from inside the app — `pull`, `rm`, `cp`, `create` — even on a remote machine
 - Adjustable reply-length cap, when a long agentic turn hits the CLI's output-token ceiling
 - Built-in update check against this repository's releases (Settings → About)
+- Conversations keep working when you switch away — their process stays alive and the transcript catches up when you come back
+- Repair Ollama models that ship no tool parser, by borrowing the one from an official model of the same family
+- Model loading between turns is shown, instead of a silent GPU behind an idle-looking app
+
+## Fixed in 0.4.4
+
+This release merges two lines of work and closes four failures that had one thing
+in common: the app looked idle while something real was happening, or work was
+silently thrown away. Each was measured against the CLI, not inferred.
+
+- **Most sub-agents failed.** `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` *refuses*
+  the surplus instead of queueing it — with nine agents delegated in one message,
+  a ceiling of 1 refused eight of them and a ceiling of 2 refused seven. It is a
+  stampede guard, never a scheduler, so it now stays at the CLI's default and
+  pacing is done where a request can actually be made to wait.
+- **Sub-agents answered with HTTP 500.** Claude Code forwards the reasoning level
+  verbatim as `output_config.effort`, and several Ollama chat templates validate
+  it and raise on anything else. Qwen3.8 accepts only `xhigh`, `medium` and `low`
+  — so `max` failed, and so did the CLI's own default of `high`. The app now
+  reads the accepted list out of the template, intersects the conversation's
+  model with the sub-agent's, and picks the closest level.
+- **A conversation you left was killed.** There was a single CLI session for the
+  whole app, stopped on every switch. Conversations now keep running in the
+  background and replay what they missed on return.
+- **Silence with the GPU busy.** Model preparation ran detached with no trace,
+  and the waiting hint stopped for good after the first token. Both now report
+  what they are waiting on, and for how long.
+
+Two ceilings worth knowing, both hard-clamped in the CLI and not configurable:
+a reply is capped at **128 000 output tokens** (asking for more silently sends
+128 000), and setting that cap in *both* `~/.claude/settings.json` and the
+environment makes the CLI fall back to its 32 000 default instead of honouring
+either.
 
 ## Installation
 

@@ -56,6 +56,15 @@ struct Sidebar: View {
                 }
 
                 Spacer()
+
+                // A conversation left working in the background: without this
+                // nothing said it was still going, so it looked abandoned.
+                if vm.workingConversationIds.contains(summary.id) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.6)
+                        .help(L10n.t("conversation_still_working"))
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)

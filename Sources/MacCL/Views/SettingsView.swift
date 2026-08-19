@@ -56,12 +56,13 @@ private struct GeneralTab: View {
             }
 
             Section(L10n.t("max_output")) {
+                // 128 000 is where Claude Code stops: it silently clamps anything
+                // above (measured — asking for 512 000 sends max_tokens 128 000),
+                // so offering more would just be a promise the CLI won't keep.
                 Picker(L10n.t("max_output_label"), selection: $settings.maxOutputTokens) {
                     Text("32 000").tag(32_000)
                     Text("64 000 — \(L10n.t("recommended"))").tag(64_000)
-                    Text("128 000").tag(128_000)
-                    Text("256 000").tag(256_000)
-                    Text("512 000").tag(512_000)
+                    Text("128 000 — \(L10n.t("cli_ceiling"))").tag(128_000)
                 }
                 Text(L10n.t("max_output_hint"))
                     .font(.caption)

@@ -17,7 +17,7 @@ struct SessionConfig {
     var streamPartial: Bool
     var sessionId: String
     /// Cap on one reply's output tokens. 0 = leave the CLI's own default alone.
-    var maxOutputTokens: Int = 64_000
+    var maxOutputTokens: Int = 0   // 0 = laissé à ~/.claude/settings.json
     /// How many sub-agents may run at once. 0 = leave the CLI's default (20).
     var maxConcurrentSubagents: Int = 2
     /// Extra environment (points `claude` at the conversation's Ollama server).

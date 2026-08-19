@@ -303,7 +303,7 @@ struct NewConversationSheet: View {
             permissionMode: permission, effort: effort,
             appendSystemPrompt: convInstructions,
             streamPartial: settings.streamPartialMessages, sessionId: "<uuid>",
-            maxOutputTokens: settings.maxOutputTokens,
+            maxOutputTokens: settings.maxOutputTokensForChildEnv,
             extraEnv: env, reverseTunnelOptions: tunnel)
         return SessionConfig.displayCommand(config: config, resumed: false)
     }

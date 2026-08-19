@@ -42,10 +42,32 @@ final class AppSettings: ObservableObject {
     }
     /// Cap on a single reply's output tokens (CLAUDE_CODE_MAX_OUTPUT_TOKENS).
     /// The CLI's own default is 32k; a long agentic turn hits it and dies mid-way
-    /// ("response exceeded the … output token maximum"), so the app raises it —
-    /// and now lets you raise it further.
+    /// ("response exceeded the … output token maximum"), so the app raises it.
+    /// The value is written to the CLI's own settings file, which makes it the
+    /// official preference — it applies to `claude` in a terminal too.
     @Published var maxOutputTokens: Int {
-        didSet { defaults.set(maxOutputTokens, forKey: "maxOutputTokens") }
+        didSet {
+            defaults.set(maxOutputTokens, forKey: "maxOutputTokens")
+            syncMaxOutputToCLI()
+        }
+    }
+
+    /// Why the last write to the CLI's settings file failed, if it did.
+    @Published private(set) var cliConfigError: String?
+
+    /// Push the cap into `~/.claude/settings.json`. Sole source of that key:
+    /// `ClaudeSession` deliberately does not also put it in the child's
+    /// environment (two sources make the CLI fall back to its default).
+    func syncMaxOutputToCLI() {
+        cliConfigError = ClaudeCLIConfig.setEnv(
+            ["CLAUDE_CODE_MAX_OUTPUT_TOKENS": String(maxOutputTokens)])
+    }
+
+    /// What to inject into the child's environment: nothing when the settings
+    /// file holds the value, the cap itself only as a fallback if that write
+    /// failed — better a duplicated source than silently dropping to 32k.
+    var maxOutputTokensForChildEnv: Int {
+        cliConfigError == nil ? 0 : maxOutputTokens
     }
     /// Diagnostic verbosity of the log file (off … trace).
     @Published var logLevelRaw: String {
@@ -131,8 +153,11 @@ final class AppSettings: ObservableObject {
             ?? PermissionMode.bypassPermissions.rawValue
         effortLevelRaw = defaults.string(forKey: "effortLevelRaw") ?? EffortLevel.high.rawValue
         ollamaBaseURL = defaults.string(forKey: "ollamaBaseURL") ?? "http://localhost:11434"
+        // Clamped to what the CLI will actually honour — a stored 512 000 from an
+        // earlier build would otherwise keep promising four times the real cap.
         maxOutputTokens = defaults.integer(forKey: "maxOutputTokens") == 0
-            ? 64_000 : max(8_000, min(512_000, defaults.integer(forKey: "maxOutputTokens")))
+            ? 64_000
+            : max(8_000, min(ClaudeCLIConfig.maxOutputCeiling, defaults.integer(forKey: "maxOutputTokens")))
         logLevelRaw = defaults.string(forKey: "logLevel") ?? AppLog.Level.warn.rawValue
         diagnosticConsoleEnabled = defaults.bool(forKey: "diagnosticConsoleEnabled")
         streamPartialMessages = defaults.object(forKey: "streamPartialMessages") as? Bool ?? true
@@ -148,6 +173,9 @@ final class AppSettings: ObservableObject {
         maxConcurrentSubagents = storedConcurrency == 0 ? 2 : max(1, min(20, storedConcurrency))
         let storedPerServer = defaults.integer(forKey: "maxConcurrentPerServer")
         maxConcurrentPerServer = storedPerServer == 0 ? 2 : max(1, min(20, storedPerServer))
+        // didSet doesn't fire during init, so publish the cap once at startup —
+        // this is also what repairs a settings.json left with an old value.
+        syncMaxOutputToCLI()
     }
 
     var language: AppLanguage {
