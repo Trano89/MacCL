@@ -64,7 +64,7 @@ final class AgentRouter {
     /// Gate key for sub-agent work aimed at the conversation's own server.
     /// Not a server name, and cannot collide with one: a `StandbyServer` name
     /// can't contain a control character.
-    static let subagentGateKey = "\u{1}subagents"
+    nonisolated static let subagentGateKey = "\u{1}subagents"
 
     private var core: RouterCore?
     /// The loopback port the router listens on, once started.

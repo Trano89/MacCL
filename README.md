@@ -50,6 +50,26 @@ One more thing worth knowing: **each conversation is tied to the server you pick
 - Repair Ollama models that ship no tool parser, by borrowing the one from an official model of the same family
 - Model loading between turns is shown, instead of a silent GPU behind an idle-looking app
 
+## Fixed in 0.4.6
+
+An audit of the 0.4.4 merge, which was resolved by hand across ten conflict zones.
+
+- **Sub-agents from a previous conversation stayed on screen.** `agentRuns` was
+  cleared when switching conversations; the CLI-reported task list was not, so
+  the toolbar count and the panel kept showing agents that belonged elsewhere.
+- **A sub-agent could spin forever.** When a turn died abnormally — a gateway
+  error, an interrupt, the process exiting — the `task_updated` that closes a
+  task never arrived, and the badge stayed lit for the rest of the session.
+  Turns now settle their own sub-agents on every exit path.
+- **A conversation left running could grow without bound.** Its parked event
+  buffer kept every streaming delta, tens of thousands of them on a long run,
+  and replayed them one by one on return. Deltas are now dropped while parked —
+  the canonical message that follows carries the same text in full — and the
+  buffer has a ceiling.
+- Two compiler warnings removed, including one ambiguous `where` clause in the
+  model-repair command and an actor-isolation slip that would be an error under
+  Swift 6.
+
 ## Fixed in 0.4.5
 
 - **A malformed tool call no longer costs you the turn.** Ollama's built-in

@@ -218,7 +218,19 @@ final class ChatViewModel: ObservableObject {
         let parkedConv = ParkedConversation(session: session)
         // Its own callbacks: `wire()` keys on object identity, so the moment we
         // swap `session` the original ones would go deaf and drop everything.
-        session.onEvent = { [weak parkedConv] env in parkedConv?.buffer.append(env) }
+        session.onEvent = { [weak parkedConv] env in
+            guard let parkedConv else { return }
+            // Live deltas are worthless to a conversation nobody is looking at:
+            // the canonical `assistant` event that follows carries the same text
+            // in full. Keeping them would pile up tens of thousands of envelopes
+            // on a long agentic run, and replaying them one by one on return
+            // would stall the interface for no gain.
+            guard env.type != "stream_event" else { return }
+            parkedConv.buffer.append(env)
+            // Last-resort ceiling: an extreme run drops its oldest events rather
+            // than growing without bound.
+            if parkedConv.buffer.count > 4_000 { parkedConv.buffer.removeFirst(500) }
+        }
         session.onStderr = { [weak parkedConv] text in
             guard let parkedConv else { return }
             parkedConv.stderr = String((parkedConv.stderr + text).suffix(2048))
@@ -367,6 +379,16 @@ final class ChatViewModel: ObservableObject {
 
     /// Sub-agents the CLI reports as still working.
     var runningTaskCount: Int { backgroundTasks.filter(\.isRunning).count }
+
+    /// A turn owns its sub-agents: when it ends — normally, in error, or because
+    /// the process died — anything still marked running is over too. Without
+    /// this, `task_started` with no matching `task_updated` (a turn killed by a
+    /// gateway error, say) left the badge spinning for the rest of the session.
+    private func settleBackgroundTasks() {
+        for idx in backgroundTasks.indices where backgroundTasks[idx].isRunning {
+            backgroundTasks[idx].status = "ended"
+        }
+    }
 
     private func handleTaskEvent(_ env: StreamEnvelope) {
         switch env.subtype {
@@ -601,6 +623,7 @@ final class ChatViewModel: ObservableObject {
         pendingInternalResults = 0   // an eaten command result must not swallow a real one
         statusLine = L10n.t("interrupted")
         stopTurnTimer()
+        settleBackgroundTasks()
     }
 
     /// Change the reasoning effort — live: the running session receives
@@ -637,6 +660,7 @@ final class ChatViewModel: ObservableObject {
         totalInputTokens = 0
         totalOutputTokens = 0
         agentRuns = [:]
+        backgroundTasks = []   // they belonged to the conversation we're leaving
         showAgentsPanel = false
         selectedAgentId = nil
         currentReasoning = ""
@@ -685,6 +709,7 @@ final class ChatViewModel: ObservableObject {
         totalInputTokens = convo.totalInputTokens ?? 0
         totalOutputTokens = convo.totalOutputTokens ?? 0
         agentRuns = [:]
+        backgroundTasks = []   // they belonged to the conversation we're leaving
         showAgentsPanel = false
         selectedAgentId = nil
         resumeOnNextStart = true // next message continues the persisted session
@@ -1336,6 +1361,7 @@ final class ChatViewModel: ObservableObject {
             // Without this the 1 s ticker publishes (and wakes SwiftUI) forever
             // after the first turn of the app's lifetime.
             stopTurnTimer()
+            settleBackgroundTasks()
             let info = ResultInfo(isError: env.isError ?? false, text: env.result,
                                   costUsd: env.totalCostUsd, durationMs: env.durationMs,
                                   numTurns: env.numTurns)
@@ -1573,6 +1599,7 @@ final class ChatViewModel: ObservableObject {
         let wasRunning = isRunning
         isRunning = false
         stopTurnTimer()
+        settleBackgroundTasks()
         AppLog.write("claude", "session exited: code=\(code) sawResult=\(sawResultSinceLastTurn) wasRunning=\(wasRunning)")
         // A turn that ends without a result produced nothing. Surface it even when
         // the exit code is 0 — a silent exit used to leave the UI blank after
