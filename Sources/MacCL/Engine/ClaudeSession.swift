@@ -53,19 +53,22 @@ struct SessionConfig {
         if inherited["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == nil {
             env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
         }
-        // A ceiling against a stampede, never a scheduler — and never 1.
+        // A ceiling against a stampede, never a scheduler — and never a throttle.
         //
         // Past this limit the CLI does NOT queue the surplus: it fails the
         // delegation with "Concurrent subagent limit reached. Do not retry.",
-        // and that work simply never happens. Measured, with 1: of two agents
-        // the model dispatched, one ran and the other came back an error.
+        // and that work simply never happens. Measured with nine agents
+        // dispatched in a single message: a ceiling of 1 refused eight of them,
+        // 2 refused seven, 20 refused none.
         //
-        // So the floor is 2, and real serialisation is done by `AgentRouter`,
-        // which can make a request WAIT. The default of 20 still needs lowering:
-        // against one Ollama server holding a single model at a time, each extra
-        // agent evicts the last one's weights.
-        if inherited["CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS"] == nil, maxConcurrentSubagents > 0 {
-            env["CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS"] = String(max(2, maxConcurrentSubagents))
+        // So it must not be derived from `maxConcurrentSubagents`, which is the
+        // number for AgentRouter's queue and defaults to 2 — doing that quietly
+        // destroyed most of what the model delegated. It stays at the CLI's own
+        // default, high enough never to refuse. Pacing belongs to `AgentRouter`,
+        // which can make a request WAIT; and where the router is not in the path
+        // Ollama queues the surplus itself rather than failing it.
+        if inherited["CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS"] == nil {
+            env["CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS"] = String(max(20, maxConcurrentSubagents))
         }
         for (k, v) in extraEnv { env[k] = v }
         return env
