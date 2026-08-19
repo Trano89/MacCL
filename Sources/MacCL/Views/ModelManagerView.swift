@@ -186,7 +186,12 @@ struct ModelManagerView: View {
                 }
                 error = await OllamaClient.createModel(name: words[1], from: words[3],
                                                        parameters: params, baseURL: serverURL)
-            case ("fix", 2), ("fix", 4) where words[2].lowercased() == "as":
+            // Split deliberately: a `where` on a multi-pattern case binds only
+            // to the last pattern, which the compiler rightly flags as ambiguous.
+            case ("fix", 2), ("fix", 4):
+                guard words.count == 2 || words[2].lowercased() == "as" else {
+                    error = L10n.t("cmd_unknown"); break
+                }
                 // fix MODEL [as NEWNAME]
                 let source = words[1]
                 let target = words.count == 4 ? words[3] : OllamaClient.repairedName(for: source)
