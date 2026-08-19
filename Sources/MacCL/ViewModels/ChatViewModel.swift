@@ -542,6 +542,7 @@ final class ChatViewModel: ObservableObject {
         lastSentBlocks = blocks
         autoCompactTriedThisTurn = false
         transientRetries = 0
+        lastPersistAt = Date()
         if currentConversationId == nil {
             let newId = UUID().uuidString
             currentConversationId = newId
@@ -765,6 +766,23 @@ final class ChatViewModel: ObservableObject {
     }
 
     // MARK: - Persistence
+
+    /// Last on-disk write of the turn in flight.
+    private var lastPersistAt = Date.distantPast
+    private static let persistInterval: TimeInterval = 6
+
+    /// Write the conversation while the turn is still running, at most every few
+    /// seconds. It used to be written when the turn STARTED and again when it
+    /// ended — so a crash, a force-quit or a power cut in the middle of a long
+    /// agentic run lost every tool call and every word it had produced. Cheap
+    /// now that saving updates one summary in place instead of re-reading the
+    /// whole folder.
+    private func persistDuringTurn() {
+        guard isRunning, currentConversationId != nil,
+              Date().timeIntervalSince(lastPersistAt) >= Self.persistInterval else { return }
+        lastPersistAt = Date()
+        persist()
+    }
 
     private func persist() {
         guard let id = currentConversationId, !items.isEmpty else { return }
@@ -1149,9 +1167,20 @@ final class ChatViewModel: ObservableObject {
         // request can be made to WAIT, which is here.
         let subagent = AgentDefinition.splitModelField(
             subagentModel.trimmingCharacters(in: .whitespaces)).model
+        // Any finite cap needs the router, not just a cap of 1. The CLI's own
+        // ceiling is deliberately pinned high because it REFUSES the surplus
+        // instead of queueing it, which means the router is the only thing left
+        // that can hold sub-agent work back — and restricting it to `== 1` left
+        // every value from 2 upward enforced by nobody at all.
+        //
+        // The two other conditions stay: the gate recognises sub-agent traffic by
+        // the model it carries, so it needs a model of its own. When sub-agents
+        // inherit the conversation's model there is nothing to tell their
+        // requests apart from the main loop's, and gating would stall the loop
+        // behind its own agents.
         let mustSerialise = !subagent.isEmpty
             && subagent != model.modelArg
-            && settings.maxConcurrentSubagents == 1
+            && settings.maxConcurrentSubagents < AppSettings.unlimitedSubagents
         guard !byName.isEmpty || mustSerialise else { return (conversationServerURL, []) }
 
         do {
@@ -1297,6 +1326,8 @@ final class ChatViewModel: ObservableObject {
                     }
                 }
             }
+            // A tool result is a natural checkpoint in an agentic loop.
+            persistDuringTurn()
         case "result":
             sawResultSinceLastTurn = true
             // A result for an app-sent command (/effort …) is plumbing, not the
