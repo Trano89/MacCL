@@ -68,7 +68,7 @@ final class ModelRouter {
         // the send must not wait minutes for a cold 30B when API_TIMEOUT_MS
         // already lets the turn survive the load.
         let modelArg = model.modelArg
-        Task.detached { await OllamaClient.warmUp(model: modelArg, baseURL: serverURL) }
+        ModelWarmup.shared.start(model: modelArg, server: serverURL)
         return nil
     }
 

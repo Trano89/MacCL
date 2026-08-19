@@ -334,7 +334,7 @@ struct NewConversationSheet: View {
         // Preload the chosen model while the user types their first message —
         // by send time the cold load is already paid (or well underway).
         if let m = model, m.provider != .anthropic {
-            Task.detached { await OllamaClient.warmUp(model: m.modelArg, baseURL: server) }
+            ModelWarmup.shared.start(model: m.modelArg, server: server)
         }
         dismiss()
     }

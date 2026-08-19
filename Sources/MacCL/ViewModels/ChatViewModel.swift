@@ -75,6 +75,8 @@ final class ChatViewModel: ObservableObject {
     private var pendingInternalResults = 0
     private var watchdog: Task<Void, Never>?
     private var receivedContentThisTurn = false
+    /// When the turn last showed any sign of life — drives the idle hint.
+    private var lastEventAt = Date()
     private var didInterrupt = false
     // Live-streaming state (partial messages): index of the in-progress
     // assistant text item, and whether this message's thinking already streamed.
@@ -184,6 +186,7 @@ final class ChatViewModel: ObservableObject {
     private func handleAgentEvent(parent: String, _ env: StreamEnvelope) {
         receivedContentThisTurn = true
         waitingHint = nil
+        lastEventAt = Date()      // a sub-agent speaking is the turn being alive
         var run = agentRuns[parent] ?? AgentRun()
 
         switch env.type {
@@ -632,18 +635,48 @@ final class ChatViewModel: ObservableObject {
         watchdog?.cancel()
         receivedContentThisTurn = false
         waitingHint = nil
-        // A transient hint (not a transcript notice) — it disappears the moment
-        // any content arrives, so it never lingers as a false "no response".
+        lastEventAt = Date()
+        // Runs for the WHOLE turn, not just its opening. The old version fired
+        // once, at 5 s and 25 s, and only while nothing had arrived yet: after
+        // the first token it went quiet for good. So a turn that spoke, then
+        // delegated to a sub-agent for ten minutes, or sat re-evaluating a huge
+        // prompt between two tool calls, showed a pulsing dot and nothing else
+        // while the GPU was plainly busy. Silence is now reported whenever it
+        // happens, and says what it is waiting on.
         watchdog = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 5_000_000_000) // 5s: first hint
-            guard let self, self.isRunning, !self.receivedContentThisTurn else { return }
-            self.waitingHint = model.provider == .ollama
-                ? L10n.t("waiting_local", model.name)
-                : L10n.t("waiting_remote", model.name)
-            try? await Task.sleep(nanoseconds: 25_000_000_000) // 25s: "still running"
-            guard self.isRunning, !self.receivedContentThisTurn else { return }
-            self.waitingHint = L10n.t("still_running")
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard let self, self.isRunning else { return }
+                let idle = Date().timeIntervalSince(self.lastEventAt)
+                guard idle >= 6 else {
+                    if self.waitingHint != nil { self.waitingHint = nil }
+                    continue
+                }
+                let subject = self.receivedContentThisTurn
+                    ? self.idleSubject()
+                    : (model.provider == .ollama ? L10n.t("waiting_local", model.name)
+                                                 : L10n.t("waiting_remote", model.name))
+                self.waitingHint = L10n.t("waiting_still",
+                                          "\(subject) · \(Self.duration(idle))")
+            }
         }
+    }
+
+    /// What the turn is actually waiting on, so the hint names something real.
+    private func idleSubject() -> String {
+        let running = agents.filter(\.isRunning)
+        if running.count > 1 { return L10n.t("agents_n", "\(running.count)") }
+        if let one = running.first { return one.description }
+        for item in items.reversed() {
+            if case .tool(let act) = item.kind, act.isRunning { return act.name }
+        }
+        return selectedModel.name
+    }
+
+    /// 95 → "1 min 35 s", 40 → "40 s".
+    private static func duration(_ seconds: TimeInterval) -> String {
+        let s = Int(seconds)
+        return s < 60 ? "\(s) s" : "\(s / 60) min \(s % 60) s"
     }
 
     func refreshModels() async {
@@ -665,6 +698,48 @@ final class ChatViewModel: ObservableObject {
     }
 
     // MARK: - Launch
+
+    /// The effort to actually ask for.
+    ///
+    /// Claude Code forwards the level verbatim as `output_config.effort`, and
+    /// several Ollama chat templates validate it and `raise_exception` on
+    /// anything outside their own list — an HTTP 500 that kills the turn.
+    /// Qwen3.8 accepts xhigh, medium and low only, so `max` fails and so does
+    /// the CLI's own default of `high`. Sub-agents inherit the session's level,
+    /// which is why the sub-agent model's template constrains it too — that is
+    /// the model whose replies were failing.
+    ///
+    /// Returns the level to send, plus the original one when it had to change.
+    private func effectiveEffort() async -> (EffortLevel, EffortLevel?) {
+        let wanted = settings.effortLevel
+        guard selectedModel.provider != .anthropic else { return (wanted, nil) }
+
+        var allowed = await OllamaClient.supportedReasoningEfforts(
+            model: selectedModel.modelArg, baseURL: conversationServerURL)
+
+        // Sub-agents ride on the same session-level effort.
+        let sub = AgentDefinition.splitModelField(
+            subagentModel.trimmingCharacters(in: .whitespaces)).model
+        if !sub.isEmpty,
+           let subAllowed = await OllamaClient.supportedReasoningEfforts(
+               model: sub, baseURL: conversationServerURL) {
+            allowed = allowed.map { $0.intersection(subAllowed) } ?? subAllowed
+        }
+
+        guard let allowed, !allowed.isEmpty, !allowed.contains(wanted.cliValue) else {
+            return (wanted, nil)   // unconstrained, or already acceptable
+        }
+        // Closest capability the templates will take, ties resolved upward.
+        let best = EffortLevel.allCases
+            .filter { allowed.contains($0.cliValue) }
+            .min { a, b in
+                let da = abs(a.bars - wanted.bars), db = abs(b.bars - wanted.bars)
+                return da == db ? a.bars > b.bars : da < db
+            }
+        guard let best, best != wanted else { return (wanted, nil) }
+        AppLog.write("session", "effort \(wanted.cliValue) unsupported by the model template — using \(best.cliValue)")
+        return (best, wanted)
+    }
 
     private func launchOrContinue(_ blocks: [[String: Any]]) async {
         // Which machine runs the agent. Local needs a `claude` on THIS Mac;
@@ -809,11 +884,15 @@ final class ChatViewModel: ObservableObject {
                          + "effort=\(settings.effortLevel.cliValue) resume=\(resumed)")
             // Reasoning level travels in-band, not as a launch flag: applied
             // before the first turn, changeable any time via the effort button.
-            let preCommands = ["/effort \(settings.effortLevel.cliValue)"]
+            let (effort, downgradedFrom) = await effectiveEffort()
+            let preCommands = ["/effort \(effort.cliValue)"]
             pendingInternalResults += preCommands.count
             try session.start(config: config, firstContent: blocks,
                               resume: resumed, preCommands: preCommands)
             resumeOnNextStart = false
+            if let from = downgradedFrom {
+                appendNotice(.info, L10n.t("effort_adjusted", "\(from.cliValue) → \(effort.cliValue)"))
+            }
             sessionBackendURL = backend.url
             // Routing is never hidden: when the turn fans out to other machines,
             // the transcript says which ones.
@@ -942,6 +1021,7 @@ final class ChatViewModel: ObservableObject {
         if ["assistant", "user", "result", "stream_event"].contains(env.type) {
             receivedContentThisTurn = true
             waitingHint = nil
+            lastEventAt = Date()
         }
         switch env.type {
         case "system":
@@ -1090,7 +1170,7 @@ final class ChatViewModel: ObservableObject {
             // reload — the "simple question takes forever" experience.
             if usesOllama {
                 let m = selectedModel.modelArg, server = conversationServerURL
-                Task.detached { await OllamaClient.warmUp(model: m, baseURL: server) }
+                ModelWarmup.shared.start(model: m, server: server)
             }
         case "stream_event":
             handleStreamEvent(env.event)

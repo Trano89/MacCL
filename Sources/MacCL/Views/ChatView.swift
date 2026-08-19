@@ -13,6 +13,9 @@ struct ChatView: View {
     @State private var showModelPicker = false
     @State private var showServerPicker = false
     @State private var showTokenPopover = false
+    /// Model loading that happens between turns — real GPU work that used to
+    /// leave no trace anywhere in the interface.
+    @ObservedObject private var warmup = ModelWarmup.shared
     @State private var showWorkLocation = false
 
     private static let fallbackSlashCommands = [
@@ -105,6 +108,7 @@ struct ChatView: View {
             if vm.isBlockedByServer {
                 serverDownBanner
             }
+            if warmup.isPreparing { preparingBanner }
             if !vm.attachments.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
@@ -276,6 +280,28 @@ struct ChatView: View {
 
     /// The conversation's bound server is down: say so, offer to change it,
     /// and let the automatic watch lift the block when it's back.
+    /// "Preparing <model> — 47 s": the GPU is loading weights, and the app says
+    /// so instead of showing an idle "Ready".
+    private var preparingBanner: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                if let job = warmup.current {
+                    Text(L10n.t("preparing_model", "\(job.model) · \(job.host)"))
+                        .font(.callout)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text("\(Int(context.date.timeIntervalSince(job.startedAt))) s")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(10)
+            .background(Theme.accentSoft, in: RoundedRectangle(cornerRadius: Theme.corner))
+        }
+    }
+
     private var serverDownBanner: some View {
         HStack(spacing: 8) {
             Image(systemName: "wifi.exclamationmark")
