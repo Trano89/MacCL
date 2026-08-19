@@ -50,6 +50,28 @@ One more thing worth knowing: **each conversation is tied to the server you pick
 - Repair Ollama models that ship no tool parser, by borrowing the one from an official model of the same family
 - Model loading between turns is shown, instead of a silent GPU behind an idle-looking app
 
+## Fixed in 0.4.7
+
+A full audit of the 12 000-line tree — security, resources, concurrency,
+persistence — not just the merge.
+
+- **A crash mid-turn lost the whole turn.** The conversation was written when a
+  turn started and again when it ended; everything a long agentic run produced
+  in between — every tool call, every word — existed only in memory. It is now
+  checkpointed on each tool result, at most once every few seconds.
+- **The sub-agent limit was enforced by nobody between 2 and 19.** The CLI's own
+  ceiling is deliberately kept high because it refuses work instead of queueing
+  it, and the router that *can* queue was only engaged when the limit was exactly
+  1. Any other value was silently ignored. The router now takes over for any
+  finite limit.
+
+What the audit did **not** find, which is worth stating: SSH passwords never
+leave the Keychain except through the child process's environment, never appear
+in the displayed command or the log; remote paths are passed as positional
+arguments, never interpolated into a shell script; the concurrency gate releases
+idempotently on every exit path; the log rotates; and the app has never recorded
+a single crash.
+
 ## Fixed in 0.4.6
 
 An audit of the 0.4.4 merge, which was resolved by hand across ten conflict zones.

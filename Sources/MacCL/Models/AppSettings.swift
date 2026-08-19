@@ -113,6 +113,10 @@ final class AppSettings: ObservableObject {
     @Published var subagentModel: String {
         didSet { defaults.set(subagentModel, forKey: "subagentModel") }
     }
+    /// The value at which the sub-agent cap means "don't hold anything back".
+    /// Also the upper bound of the setting, so the two can't drift apart.
+    static let unlimitedSubagents = 20
+
     /// How many sub-agents may run at once (CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS).
     ///
     /// The CLI's own default is 20, which is a number written for a cloud API,
@@ -170,7 +174,7 @@ final class AppSettings: ObservableObject {
         // `integer(forKey:)` reads 0 for "never set" — treat that as the default
         // rather than as "zero sub-agents", which would be a cap of nothing.
         let storedConcurrency = defaults.integer(forKey: "maxConcurrentSubagents")
-        maxConcurrentSubagents = storedConcurrency == 0 ? 2 : max(1, min(20, storedConcurrency))
+        maxConcurrentSubagents = storedConcurrency == 0 ? 2 : max(1, min(Self.unlimitedSubagents, storedConcurrency))
         let storedPerServer = defaults.integer(forKey: "maxConcurrentPerServer")
         maxConcurrentPerServer = storedPerServer == 0 ? 2 : max(1, min(20, storedPerServer))
         // didSet doesn't fire during init, so publish the cap once at startup —
